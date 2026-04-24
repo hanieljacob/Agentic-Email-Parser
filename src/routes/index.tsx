@@ -314,8 +314,26 @@ function ComposePage() {
 
   async function doSend() {
     setStatus('sending')
-    // TODO: wire to createServerFn → LLM + DB
-    await new Promise((r) => setTimeout(r, 1400))
+    const date = new Date().toUTCString()
+    const msgId = `<${crypto.randomUUID()}@compose.local>`
+    const raw = [
+      `From: compose@local`,
+      `To: ${to}`,
+      ...(cc.trim() ? [`Cc: ${cc}`] : []),
+      `Subject: ${subject}`,
+      `Date: ${date}`,
+      `Message-ID: ${msgId}`,
+      `MIME-Version: 1.0`,
+      `Content-Type: text/plain; charset=utf-8`,
+      ``,
+      body,
+    ].join('\r\n')
+
+    const res = await fetch('http://localhost:8000/emails', {
+      method: 'POST',
+      body: raw,
+    })
+    if (!res.ok) throw new Error(`Ingest failed: ${res.status}`)
     setStatus('sent')
   }
 

@@ -12,7 +12,11 @@
     "test": "vitest run",
     "lint": "eslint",
     "format": "prettier --check .",
-    "check": "prettier --write . && eslint --fix"
+    "check": "prettier --write . && eslint --fix",
+    "backend": "dotenv -e .env -- python3 backend/ingest.py",
+    "migrate": "dotenv -e .env -- bash -c 'for f in migrations/*.sql; do echo \"--- $f\"; psql $DATABASE_URL < $f; done'",
+    "ingest": "dotenv -e .env -- python3 backend/ingest.py",
+    "setup": "createdb email_parser || true && pnpm migrate && pip install -r backend/requirements.txt"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",
@@ -38,6 +42,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
+    "dotenv-cli": "^11.0.0",
     "jsdom": "^28.1.0",
     "prettier": "^3.8.1",
     "typescript": "^5.7.2",
