@@ -11,3 +11,16 @@ dist-ssr
 .vinxi
 __unconfig*
 todos.json
+
+# Python
+.venv
+**/__pycache__/
+*.pyc
+
+# IDE / local tooling
+.vscode/
+.claude/
+.cta.json
+
+# Local attachment storage
+attachments/
