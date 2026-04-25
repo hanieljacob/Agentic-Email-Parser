@@ -281,7 +281,6 @@ function ComposePage() {
   const ccId = useId()
   const subjectId = useId()
   const bodyId = useId()
-  const fileInputId = useId()
 
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -319,11 +318,12 @@ function ComposePage() {
     return () => window.removeEventListener('keydown', handler)
   })
 
-  const addFiles = useCallback((files: FileList | null) => {
+  const addFiles = useCallback((files: FileList | File[] | null) => {
     if (!files || files.length === 0) return
+    const arr = Array.from(files)  // snapshot before input is cleared
     setAttachments((prev) => {
       const existing = new Set(prev.map((f) => `${f.name}::${f.size}`))
-      return [...prev, ...Array.from(files).filter((f) => !existing.has(`${f.name}::${f.size}`))]
+      return [...prev, ...arr.filter((f) => !existing.has(`${f.name}::${f.size}`))]
     })
   }, [])
 
@@ -598,7 +598,7 @@ function ComposePage() {
               )}
 
               <label
-                htmlFor={fileInputId}
+                htmlFor="compose-file-input"
                 className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl border-2 border-dashed py-3 text-sm font-medium transition ${
                   dragging
                     ? 'border-[var(--lagoon)] bg-[rgba(59,130,246,0.08)] text-[var(--lagoon-deep)]'
@@ -619,13 +619,14 @@ function ComposePage() {
               </p>
 
               <input
-                id={fileInputId}
+                id="compose-file-input"
                 type="file"
                 multiple
-                className="hidden"
+                className="sr-only"
                 onChange={(e) => {
-                  addFiles(e.target.files)
+                  const files = Array.from(e.target.files ?? [])
                   e.target.value = ''
+                  if (files.length) addFiles(files)
                 }}
               />
             </div>

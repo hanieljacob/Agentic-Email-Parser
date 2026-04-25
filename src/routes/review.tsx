@@ -49,6 +49,10 @@ const listPending = createServerFn({ method: 'GET' }).handler(async () => {
 const applyChange = createServerFn({ method: 'POST' })
   .inputValidator((id: string) => id)
   .handler(async ({ data: id }) => {
+    await pool.query(
+      `UPDATE proposed_changes SET status = 'approved' WHERE id = $1 AND status = 'pending'`,
+      [id],
+    )
     return applyProposedChange(id, 'reviewer')
   })
 
