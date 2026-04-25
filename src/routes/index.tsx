@@ -1,7 +1,7 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createServerFn } from '@tanstack/react-start'
 import {
   useState,
-  useRef,
   useCallback,
   useId,
   useEffect,
@@ -20,6 +20,40 @@ import {
   Plus,
   ArrowUpRight,
 } from 'lucide-react'
+import pg from 'pg'
+
+// ── server-side pipeline ──────────────────────────────────────────────────────
+
+const { Pool } = pg
+const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+
+const processEmail = createServerFn({ method: 'POST' })
+  .inputValidator((payload: { mime: string }) => payload)
+  .handler(async ({ data: { mime } }) => {
+    // Ingest — server-to-server, no CORS
+    const ingestRes = await fetch('http://localhost:8000/emails', {
+      method: 'POST',
+      body: mime,
+    })
+    if (!ingestRes.ok) throw new Error(`Ingest failed: ${ingestRes.status}`)
+    const emailId = (await ingestRes.text()).trim()
+
+    const [{ extract }, { match }] = await Promise.all([
+      import('../../backend/extract.js'),
+      import('../../backend/match.js'),
+    ])
+    const runId = await extract(emailId)
+    await match(runId)
+    const res = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count
+       FROM proposed_changes
+       WHERE extraction_run_id = $1 AND status = 'pending'`,
+      [runId],
+    )
+    return { pendingCount: Number(res.rows[0]?.count ?? 0) }
+  })
+
+// ── route ─────────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute('/')({ component: ComposePage })
 
@@ -80,7 +114,6 @@ function FieldRow({
 }) {
   return (
     <div className="group/field relative flex items-center border-b border-[var(--line)] transition-colors focus-within:border-[color-mix(in_oklab,var(--lagoon)_50%,var(--line))]">
-      {/* left accent bar */}
       <span
         aria-hidden
         className="absolute left-0 top-0 h-full w-[2px] origin-center scale-y-0 rounded-r bg-[var(--lagoon-deep)] transition-transform duration-200 group-focus-within/field:scale-y-100"
@@ -132,7 +165,6 @@ function AttachmentChip({
 
   return (
     <div className="group/chip flex items-center gap-2 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--surface)] text-xs shadow-sm transition hover:border-[color-mix(in_oklab,var(--lagoon)_30%,var(--line))] hover:shadow-md">
-      {/* thumbnail or icon */}
       {thumb ? (
         <img
           src={thumb}
@@ -162,22 +194,19 @@ function AttachmentChip({
   )
 }
 
-// ─── sent confirmation ────────────────────────────────────────────────────────
+// ─── no-changes confirmation ───────────────────────────────────────────────────
 
-function SentConfirmation({
+function NoChangesConfirmation({
   to,
   subject,
-  attachmentCount,
   onNew,
 }: {
   to: string
   subject: string
-  attachmentCount: number
   onNew: () => void
 }) {
   return (
     <div className="island-shell rise-in overflow-hidden rounded-2xl">
-      {/* top accent */}
       <div className="h-1 w-full bg-[linear-gradient(90deg,var(--lagoon-deep),var(--lagoon),#93c5fd)]" />
 
       <div className="px-8 py-14 text-center">
@@ -190,23 +219,23 @@ function SentConfirmation({
           </div>
         </div>
 
-        <p className="island-kicker mb-2">Email submitted</p>
+        <p className="island-kicker mb-2">Email processed</p>
         <h2 className="display-title m-0 mb-2 text-2xl font-bold text-[var(--sea-ink)]">
-          Queued for parsing
+          No PO changes detected
         </h2>
         <p className="mb-8 text-sm text-[var(--sea-ink-soft)]/70">
-          The LLM pipeline will extract PO data and update the database.
+          The email was saved but the LLM found no actionable purchase order updates.
         </p>
 
         <div className="mx-auto mb-8 max-w-sm divide-y divide-[var(--line)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)] text-left text-sm">
-          <SummaryRow label="To" value={to} />
-          <SummaryRow label="Subject" value={subject} />
-          {attachmentCount > 0 && (
-            <SummaryRow
-              label="Files"
-              value={`${attachmentCount} attachment${attachmentCount !== 1 ? 's' : ''}`}
-            />
-          )}
+          <div className="flex gap-3 px-4 py-3">
+            <span className="w-14 flex-shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--sea-ink-soft)]/50">To</span>
+            <span className="truncate text-[var(--sea-ink)]">{to}</span>
+          </div>
+          <div className="flex gap-3 px-4 py-3">
+            <span className="w-14 flex-shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--sea-ink-soft)]/50">Subject</span>
+            <span className="truncate text-[var(--sea-ink)]">{subject}</span>
+          </div>
         </div>
 
         <button
@@ -221,27 +250,40 @@ function SentConfirmation({
   )
 }
 
-function SummaryRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex gap-3 px-4 py-3">
-      <span className="w-14 flex-shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--sea-ink-soft)]/50">
-        {label}
-      </span>
-      <span className="truncate text-[var(--sea-ink)]">{value}</span>
-    </div>
-  )
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function bufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  }
+  return btoa(binary).replace(/.{76}/g, '$&\r\n')
 }
 
 // ─── page ─────────────────────────────────────────────────────────────────────
 
-type Status = 'idle' | 'sending' | 'sent'
+type Status = 'idle' | 'sending' | 'processing' | 'done' | 'error'
+
+const STATUS_LABEL: Record<Status, string> = {
+  idle:       'Send',
+  sending:    'Sending…',
+  processing: 'Analysing…',
+  done:       'Done',
+  error:      'Retry',
+}
 
 function ComposePage() {
+  const navigate = useNavigate()
+
+  const fromId = useId()
   const toId = useId()
   const ccId = useId()
   const subjectId = useId()
   const bodyId = useId()
+  const fileInputId = useId()
 
+  const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [cc, setCc] = useState('')
   const [showCc, setShowCc] = useState(false)
@@ -250,31 +292,27 @@ function ComposePage() {
   const [attachments, setAttachments] = useState<File[]>([])
   const [dragging, setDragging] = useState(false)
   const [status, setStatus] = useState<Status>('idle')
-
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const canSend =
-    to.trim() !== '' && subject.trim() !== '' && body.trim() !== ''
+    from.trim() !== '' && to.trim() !== '' && subject.trim() !== '' && body.trim() !== ''
 
   const completenessSteps = useMemo(
     () => [
+      { label: 'Sender (From)', done: from.trim() !== '' },
       { label: 'Recipient (To)', done: to.trim() !== '' },
       { label: 'Subject line', done: subject.trim() !== '' },
       { label: 'Message body', done: body.trim().length > 20 },
-      { label: 'Attachments', done: attachments.length > 0 },
     ],
-    [to, subject, body, attachments.length],
+    [from, to, subject, body],
   )
 
   const wc = useMemo(() => wordCount(body), [body])
 
-  // ⌘/Ctrl + Enter to send
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-        if (canSend && status === 'idle') {
-          void doSend()
-        }
+        if (canSend && status === 'idle') void doSend()
       }
     }
     window.addEventListener('keydown', handler)
@@ -285,10 +323,7 @@ function ComposePage() {
     if (!files || files.length === 0) return
     setAttachments((prev) => {
       const existing = new Set(prev.map((f) => `${f.name}::${f.size}`))
-      const incoming = Array.from(files).filter(
-        (f) => !existing.has(`${f.name}::${f.size}`),
-      )
-      return [...prev, ...incoming]
+      return [...prev, ...Array.from(files).filter((f) => !existing.has(`${f.name}::${f.size}`))]
     })
   }, [])
 
@@ -298,9 +333,7 @@ function ComposePage() {
   }, [])
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setDragging(false)
-    }
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false)
   }, [])
 
   const handleDrop = useCallback(
@@ -314,36 +347,74 @@ function ComposePage() {
 
   async function doSend() {
     setStatus('sending')
-    const date = new Date().toUTCString()
-    const msgId = `<${crypto.randomUUID()}@compose.local>`
-    const raw = [
-      `From: compose@local`,
-      `To: ${to}`,
-      ...(cc.trim() ? [`Cc: ${cc}`] : []),
-      `Subject: ${subject}`,
-      `Date: ${date}`,
-      `Message-ID: ${msgId}`,
-      `MIME-Version: 1.0`,
-      `Content-Type: text/plain; charset=utf-8`,
-      ``,
-      body,
-    ].join('\r\n')
+    setErrorMsg(null)
+    try {
+      const date = new Date().toUTCString()
+      const msgId = `<${crypto.randomUUID()}@compose.local>`
 
-    const res = await fetch('http://localhost:8000/emails', {
-      method: 'POST',
-      body: raw,
-    })
-    if (!res.ok) throw new Error(`Ingest failed: ${res.status}`)
-    setStatus('sent')
+      const headers = [
+        `From: ${from}`,
+        `To: ${to}`,
+        ...(cc.trim() ? [`Cc: ${cc}`] : []),
+        `Subject: ${subject}`,
+        `Date: ${date}`,
+        `Message-ID: ${msgId}`,
+        `MIME-Version: 1.0`,
+      ]
+
+      let raw: string
+
+      if (attachments.length === 0) {
+        raw = [...headers, `Content-Type: text/plain; charset=utf-8`, ``, body].join('\r\n')
+      } else {
+        const boundary = `----=_Part_${crypto.randomUUID().replace(/-/g, '')}`
+        const textPart = [`--${boundary}`, `Content-Type: text/plain; charset=utf-8`, ``, body].join('\r\n')
+        const attachmentParts = await Promise.all(
+          attachments.map(async (file) => {
+            const b64 = bufferToBase64(await file.arrayBuffer())
+            const mime = file.type || 'application/octet-stream'
+            return [
+              `--${boundary}`,
+              `Content-Type: ${mime}; name="${file.name}"`,
+              `Content-Transfer-Encoding: base64`,
+              `Content-Disposition: attachment; filename="${file.name}"`,
+              ``,
+              b64,
+            ].join('\r\n')
+          }),
+        )
+        raw = [
+          ...headers,
+          `Content-Type: multipart/mixed; boundary="${boundary}"`,
+          ``,
+          textPart,
+          ...attachmentParts,
+          `--${boundary}--`,
+        ].join('\r\n')
+      }
+
+      setStatus('processing')
+      const { pendingCount } = await processEmail({ data: { mime: raw } })
+
+      if (pendingCount > 0) {
+        await navigate({ to: '/review' })
+      } else {
+        setStatus('done')
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err))
+      setStatus('error')
+    }
   }
 
   const handleSubmit = async (e: React.SyntheticEvent) => {
     e.preventDefault()
-    if (status !== 'idle' || !canSend) return
+    if (status === 'sending' || status === 'processing' || !canSend) return
     await doSend()
   }
 
   const handleReset = () => {
+    setFrom('')
     setTo('')
     setCc('')
     setShowCc(false)
@@ -351,22 +422,20 @@ function ComposePage() {
     setBody('')
     setAttachments([])
     setStatus('idle')
+    setErrorMsg(null)
   }
 
-  if (status === 'sent') {
+  if (status === 'done') {
     return (
       <main className="page-wrap px-4 pb-16 pt-10">
         <div className="mx-auto max-w-[720px]">
-          <SentConfirmation
-            to={to}
-            subject={subject}
-            attachmentCount={attachments.length}
-            onNew={handleReset}
-          />
+          <NoChangesConfirmation to={to} subject={subject} onNew={handleReset} />
         </div>
       </main>
     )
   }
+
+  const busy = status === 'sending' || status === 'processing'
 
   return (
     <main className="page-wrap px-4 pb-16 pt-10">
@@ -392,13 +461,13 @@ function ComposePage() {
               <div className="flex flex-col items-end gap-1.5">
                 <button
                   type="submit"
-                  disabled={!canSend || status === 'sending'}
+                  disabled={!canSend || busy}
                   className="group flex items-center gap-2 rounded-full bg-[var(--lagoon-deep)] px-5 py-2.5 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(37,99,235,0.25)] transition enabled:hover:-translate-y-0.5 enabled:hover:shadow-[0_6px_20px_rgba(37,99,235,0.32)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {status === 'sending' ? (
+                  {busy ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Sending…
+                      {STATUS_LABEL[status]}
                     </>
                   ) : (
                     <>
@@ -408,13 +477,35 @@ function ComposePage() {
                     </>
                   )}
                 </button>
-                <span className="text-[10px] text-[var(--sea-ink-soft)]/35">
-                  ⌘ ↵ to send
-                </span>
+                {busy ? (
+                  <span className="text-[10px] text-[var(--sea-ink-soft)]/35">
+                    {status === 'sending' ? 'Ingesting email…' : 'Running LLM pipeline…'}
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-[var(--sea-ink-soft)]/35">⌘ ↵ to send</span>
+                )}
               </div>
             </div>
 
+            {errorMsg && (
+              <div className="border-b border-red-200 bg-red-50 px-5 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
+                {errorMsg}
+              </div>
+            )}
+
             {/* ── address & subject ────────────────────────────────────────── */}
+            <FieldRow label="From" htmlFor={fromId}>
+              <input
+                id={fromId}
+                type="email"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                placeholder="supplier@example.com"
+                required
+                className="w-full bg-transparent text-sm text-[var(--sea-ink)] placeholder:text-[var(--sea-ink-soft)]/35 outline-none"
+              />
+            </FieldRow>
+
             <FieldRow
               label="To"
               htmlFor={toId}
@@ -433,7 +524,7 @@ function ComposePage() {
                 type="email"
                 value={to}
                 onChange={(e) => setTo(e.target.value)}
-                placeholder="supplier@company.com"
+                placeholder="ops@yourcompany.com"
                 required
                 className="w-full bg-transparent text-sm text-[var(--sea-ink)] placeholder:text-[var(--sea-ink-soft)]/35 outline-none"
               />
@@ -481,12 +572,9 @@ function ComposePage() {
                 className="w-full resize-none bg-transparent px-5 py-4 text-sm leading-relaxed text-[var(--sea-ink)] placeholder:text-[var(--sea-ink-soft)]/28 outline-none"
               />
 
-              {/* word count */}
               <div
                 className={`absolute bottom-3 right-4 text-[11px] tabular-nums transition ${
-                  wc > 0
-                    ? 'text-[var(--sea-ink-soft)]/40'
-                    : 'text-transparent'
+                  wc > 0 ? 'text-[var(--sea-ink-soft)]/40' : 'text-transparent'
                 }`}
               >
                 {wc} {wc === 1 ? 'word' : 'words'}
@@ -502,19 +590,16 @@ function ComposePage() {
                       key={`${file.name}::${file.size}::${i}`}
                       file={file}
                       onRemove={() =>
-                        setAttachments((prev) =>
-                          prev.filter((_, idx) => idx !== i),
-                        )
+                        setAttachments((prev) => prev.filter((_, idx) => idx !== i))
                       }
                     />
                   ))}
                 </div>
               )}
 
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className={`flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed py-3 text-sm font-medium transition ${
+              <label
+                htmlFor={fileInputId}
+                className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl border-2 border-dashed py-3 text-sm font-medium transition ${
                   dragging
                     ? 'border-[var(--lagoon)] bg-[rgba(59,130,246,0.08)] text-[var(--lagoon-deep)]'
                     : 'border-[var(--line)] text-[var(--sea-ink-soft)]/55 hover:border-[color-mix(in_oklab,var(--lagoon)_38%,var(--line))] hover:bg-[rgba(59,130,246,0.05)] hover:text-[var(--sea-ink-soft)]'
@@ -527,14 +612,14 @@ function ComposePage() {
                     · drag &amp; drop or click
                   </span>
                 )}
-              </button>
+              </label>
 
               <p className="mt-2 text-center text-[11px] text-[var(--sea-ink-soft)]/35">
                 PDF, images, spreadsheets, Word docs — any PO-related documents
               </p>
 
               <input
-                ref={fileInputRef}
+                id={fileInputId}
                 type="file"
                 multiple
                 className="hidden"

@@ -9,6 +9,38 @@ npm install
 npm run dev
 ```
 
+---
+
+## Database schema
+
+Canonical tables (singular names, matching `backend/data/db.xlsx`):
+
+| Table | Key columns |
+|---|---|
+| `product` | `sku`, `title` |
+| `supplier` | `name`, `email` (primary resolution address) |
+| `purchase_order` | `reference_num`, `supplier_id`, `delivery_date` |
+| `purchase_order_line` | `purchase_order_id`, `product_id`, `quantity`, `delivery_date` |
+| `supplier_product` | `(supplier_id, product_id)` PK, `supplier_sku`, `price_per_unit` |
+
+Pipeline tables (unchanged): `emails`, `extraction_runs`, `proposed_changes`, `audit_log`, `supplier_email_aliases`.
+
+All canonical tables carry `legacy_id integer` (the integer PK from the xlsx) for seed traceability. These are kept permanently so the xlsx row can always be traced to its uuid.
+
+### Running migrations
+
+```bash
+pnpm migrate
+```
+
+### Seeding from db.xlsx
+
+```bash
+pnpm seed
+```
+
+The seed script truncates all canonical tables and re-inserts from `backend/data/db.xlsx`. It also creates one `supplier_email_aliases` row per supplier pointing at `supplier.email`, so alias-based sender resolution works out of the box. Safe to run multiple times in development.
+
 # Building For Production
 
 To build this application for production:
@@ -16,6 +48,28 @@ To build this application for production:
 ```bash
 npm run build
 ```
+
+## Attachment processing
+
+Image attachments (`image/*` MIME types) are included in the LLM extraction call as base64-encoded vision inputs alongside the email body.
+
+**Limitations:**
+- PDF and document attachments (Word, Excel, etc.) are not processed — the LLM only sees their filenames are present, not their contents.
+- Attachments are stored at `./attachments/<sha256><ext>` and tracked in the `email_attachments` table. Previously ingested emails will not have `email_attachments` rows; re-ingesting them will populate the table.
+
+## Writeback API
+
+Run `pnpm api` to start the writeback server on port 8002 (configurable via `API_PORT`).
+
+| Method | Path | Body | Action |
+|---|---|---|---|
+| `POST` | `/proposed-changes/:id/apply` | `{ applied_by?: string }` | Writes the approved change to `purchase_order_line` (version-safe; marks superseded on conflict) |
+| `POST` | `/proposed-changes/:id/correct-sku` | `{ correct_product_id: string }` | Records the supplier's SKU mapping and re-points the proposed change at the right line |
+| `POST` | `/emails/:id/assign-supplier` | `{ supplier_id: string, retrigger?: boolean }` | Links the sender address to a supplier and, by default, re-runs extract + match on the email |
+
+### Enabling auto-apply
+
+Currently every proposed change lands in `pending` and waits for human review. To enable auto-apply, add a confidence threshold check in `backend/extract.ts` before inserting the row: if the LLM returns a `confidence` score above a chosen threshold (e.g. 0.95), call `applyProposedChange` directly instead of leaving the status as `pending`. Because `applyProposedChange` is already transactional and version-safe, the only change required is that routing decision — no schema or writeback logic changes are needed.
 
 ## Testing
 

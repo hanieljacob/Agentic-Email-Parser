@@ -57,8 +57,10 @@ def _plain_text(msg) -> str:
     return ""
 
 
-def _save_attachments(msg) -> None:
+def _save_attachments(msg) -> list[tuple[str, str, str]]:
+    """Save attachments to disk; return list of (stored_name, original_name, mime_type)."""
     ATTACHMENTS_DIR.mkdir(exist_ok=True)
+    saved = []
     for part in msg.walk():
         if part.get_content_disposition() != "attachment":
             continue
@@ -66,10 +68,15 @@ def _save_attachments(msg) -> None:
         if not payload:
             continue
         content_hash = hashlib.sha256(payload).hexdigest()
-        suffix = Path(part.get_filename() or "bin").suffix or ".bin"
-        dest = ATTACHMENTS_DIR / f"{content_hash}{suffix}"
+        original_name = part.get_filename() or "attachment"
+        suffix = Path(original_name).suffix or ".bin"
+        stored_name = f"{content_hash}{suffix}"
+        dest = ATTACHMENTS_DIR / stored_name
         if not dest.exists():
             dest.write_bytes(payload)
+        mime_type = part.get_content_type() or "application/octet-stream"
+        saved.append((stored_name, original_name, mime_type))
+    return saved
 
 
 def ingest(raw: bytes) -> str:
@@ -88,7 +95,7 @@ def ingest(raw: bytes) -> str:
         received_at = None
 
     body_text = _plain_text(msg)
-    _save_attachments(msg)
+    attachments = _save_attachments(msg)
 
     with psycopg.connect(DATABASE_URL) as conn:
         existing = conn.execute(
@@ -106,8 +113,19 @@ def ingest(raw: bytes) -> str:
             """,
             (message_id, sender, subject, received_at, body_text, content_hash),
         ).fetchone()
+        email_id = str(row[0])
+
+        for stored_name, original_name, mime_type in attachments:
+            conn.execute(
+                """
+                INSERT INTO email_attachments (email_id, stored_name, original_name, mime_type)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (email_id, stored_name, original_name, mime_type),
+            )
+
         conn.commit()
-        return str(row[0])
+        return email_id
 
 
 @app.post("/emails")

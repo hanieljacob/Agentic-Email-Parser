@@ -26,6 +26,13 @@ export default function Header() {
           >
             Compose
           </Link>
+          <Link
+            to="/review"
+            className="nav-link"
+            activeProps={{ className: 'nav-link is-active' }}
+          >
+            Review
+          </Link>
         </div>
 
         {/* actions */}
