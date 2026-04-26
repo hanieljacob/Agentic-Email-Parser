@@ -28,6 +28,25 @@ continue scanning for quantity changes and vice versa.
 Each distinct change must be its own line_update entry. If an email changes the delivery \
 date for two SKUs and the quantity for one SKU, you must produce three line_update entries.
 
+## SKU ranges
+
+A supplier may write a range of SKUs using a dash, e.g. "SKU-1-3" or "items 4-7". \
+Always check whether the notation refers to a consecutive range of individual SKUs rather \
+than a single SKU code that happens to contain a hyphen.
+
+How to decide:
+- If the known SKU list contains individual entries that match every element of the range \
+  (e.g. SKU-1, SKU-2, SKU-3 are all present), treat it as a range.
+- If only one entry matches (e.g. SKU-13 exists but SKU-1, SKU-2, SKU-3 do not), treat \
+  it as a single SKU code.
+- If it is genuinely ambiguous, produce one line_update per plausible interpretation, each \
+  with a confidence of 0.6, and also add a note to unmatched_mentions describing the \
+  ambiguity.
+
+When a range is confirmed, expand it: produce one line_update per individual SKU in the \
+range, all sharing the same field, new_value, and verbatim evidence. Set confidence to 0.8 \
+(one step below an unambiguous single-SKU reference) to reflect the inference.
+
 ## Source tracking
 
 For each po_update, set the source field to:
