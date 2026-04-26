@@ -33,6 +33,13 @@ export default function Header() {
           >
             Review
           </Link>
+          <Link
+            to="/monitoring"
+            className="nav-link"
+            activeProps={{ className: 'nav-link is-active' }}
+          >
+            Monitoring
+          </Link>
         </div>
 
         {/* actions */}

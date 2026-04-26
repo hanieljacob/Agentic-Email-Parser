@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { applyProposedChange } from '../writeback/apply.js'
-import { correctSku } from '../learning/aliases.js'
+import { applyProposedChange } from '../src/writeback/apply.js'
+import { correctSku } from '../src/learning/aliases.js'
 
 const router = Router()
 

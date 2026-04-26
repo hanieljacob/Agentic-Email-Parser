@@ -3,10 +3,7 @@
  * Entire operation runs in a single transaction.
  */
 
-import pg from 'pg'
-
-const { Pool } = pg
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+import { pool } from '#/db.js'
 
 // Whitelist prevents dynamic SQL injection via field_name values from the DB.
 const WRITABLE_FIELDS: Record<string, string> = {

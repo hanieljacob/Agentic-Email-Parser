@@ -20,18 +20,15 @@ import {
   Plus,
   ArrowUpRight,
 } from 'lucide-react'
-import pg from 'pg'
+import { pool } from '#/db.js'
 
 // ── server-side pipeline ──────────────────────────────────────────────────────
-
-const { Pool } = pg
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 
 const processEmail = createServerFn({ method: 'POST' })
   .inputValidator((payload: { mime: string }) => payload)
   .handler(async ({ data: { mime } }) => {
     // Ingest — server-to-server, no CORS
-    const ingestRes = await fetch('http://localhost:8000/emails', {
+    const ingestRes = await fetch('http://localhost:8000/emails?no_pipeline=true', {
       method: 'POST',
       body: mime,
     })

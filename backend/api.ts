@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
-import proposedChangesRouter from '../src/routes/proposedChanges.js'
-import emailsRouter from '../src/routes/emails.js'
+import proposedChangesRouter from './proposedChanges.js'
+import emailsRouter from './emails.js'
 
 const app = express()
 const PORT = Number(process.env.API_PORT ?? 8002)

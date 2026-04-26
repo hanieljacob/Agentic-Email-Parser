@@ -6,19 +6,17 @@
  */
 
 import pg from 'pg'
+import { pool } from '#/db.js'
+import { parseSenderEmail } from '#/utils/email.js'
 
 // Lazy import to avoid circular init at module load time.
 const getExtract = () => import('../../backend/extract.js').then((m) => m.extract)
 const getMatch   = () => import('../../backend/match.js').then((m) => m.match)
 
-const { Pool } = pg
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
-
 // ── shared helper ─────────────────────────────────────────────────────────────
 
 async function resolveSupplierId(db: pg.PoolClient, senderRaw: string): Promise<string | null> {
-  const addrMatch = senderRaw.match(/<([^>]+)>/)
-  const email = (addrMatch ? addrMatch[1] : senderRaw).toLowerCase()
+  const email = parseSenderEmail(senderRaw)
   const res = await db.query<{ id: string }>(
     `SELECT s.id FROM supplier s WHERE lower(s.email) = $1
      UNION
@@ -44,7 +42,6 @@ export async function assignSupplier(
   supplierId: string,
   retrigger = true,
 ): Promise<AssignSupplierResult> {
-  // Fetch sender address
   const emailRes = await pool.query<{ sender: string }>(
     `SELECT sender FROM emails WHERE id = $1`,
     [emailId],
@@ -52,8 +49,7 @@ export async function assignSupplier(
   const sender = emailRes.rows[0]?.sender
   if (!sender) throw new Error(`email not found: ${emailId}`)
 
-  const addrMatch = sender.match(/<([^>]+)>/)
-  const emailAddress = (addrMatch ? addrMatch[1] : sender).toLowerCase()
+  const emailAddress = parseSenderEmail(sender)
 
   const insertRes = await pool.query(
     `INSERT INTO supplier_email_aliases (supplier_id, email_address)
@@ -125,6 +121,13 @@ export async function correctSku(
       }
     }
 
+    // Look up the correct product's canonical SKU for the correction record.
+    const correctProductRes = await db.query<{ sku: string }>(
+      `SELECT sku FROM product WHERE id = $1`,
+      [correctProductId],
+    )
+    const correctProductSku = correctProductRes.rows[0]?.sku ?? null
+
     // Upsert the learned mapping into supplier_product
     if (foundSku) {
       await db.query(
@@ -134,6 +137,15 @@ export async function correctSku(
          DO UPDATE SET supplier_sku = EXCLUDED.supplier_sku`,
         [supplierId, correctProductId, foundSku],
       )
+
+      // Record a few-shot correction example for future extractions.
+      if (pc.evidence_text && correctProductSku) {
+        await db.query(
+          `INSERT INTO supplier_corrections (supplier_id, context, wrong, correct, field)
+           VALUES ($1, $2, $3, $4, 'sku_or_code')`,
+          [supplierId, pc.evidence_text, foundSku, correctProductSku],
+        )
+      }
     }
 
     // Re-point the proposed_change at the correct purchase_order_line on the same PO.

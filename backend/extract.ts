@@ -13,16 +13,15 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 import OpenAI from 'openai'
-import pg from 'pg'
 import { z } from 'zod'
 import { PDFParse } from 'pdf-parse'
 import mammoth from 'mammoth'
 import XLSX from 'xlsx'
 
-import { SYSTEM_PROMPT, formatContext } from './prompt.js'
-
-const { Pool } = pg
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+import { SYSTEM_PROMPT, formatContext, type CorrectionRow } from './prompt.js'
+import { match } from './match.js'
+import { pool } from './db.js'
+import { parseSenderEmail } from '../src/utils/email.js'
 const MODEL_NAME = process.env.MODEL_NAME ?? 'anthropic/claude-sonnet-4'
 
 // ── Zod schema ──────────────────────────────────────────────────────────────
@@ -64,21 +63,20 @@ function parseModelContent(content: string): unknown {
 // ── context loading ─────────────────────────────────────────────────────────
 
 async function loadContext(senderRaw: string) {
-  const match = senderRaw.match(/<([^>]+)>/)
-  const senderEmail = (match ? match[1] : senderRaw).toLowerCase()
+  const senderEmail = parseSenderEmail(senderRaw)
 
   // Check supplier.email first, then fall back to supplier_email_aliases
-  const { rows: supplierRows } = await pool.query<{ id: string; name: string }>(
-    `SELECT s.id, s.name FROM supplier s WHERE lower(s.email) = $1
+  const { rows: supplierRows } = await pool.query<{ id: string; name: string; llm_notes: string | null }>(
+    `SELECT s.id, s.name, s.llm_notes FROM supplier s WHERE lower(s.email) = $1
      UNION
-     SELECT s.id, s.name FROM supplier s
+     SELECT s.id, s.name, s.llm_notes FROM supplier s
      JOIN supplier_email_aliases sea ON sea.supplier_id = s.id
      WHERE lower(sea.email_address) = $1
      LIMIT 1`,
     [senderEmail],
   )
   const supplier = supplierRows[0] ?? null
-  if (!supplier) return { supplier: null, pos: [], aliases: [] }
+  if (!supplier) return { supplier: null, pos: [], aliases: [], corrections: [] }
 
   const { rows: poRows } = await pool.query(
     `SELECT po.reference_num,
@@ -118,7 +116,16 @@ async function loadContext(senderRaw: string) {
     product_name: r.product_name,
   }))
 
-  return { supplier, pos, aliases }
+  const { rows: correctionRows } = await pool.query<CorrectionRow>(
+    `SELECT context, wrong, correct, field
+     FROM supplier_corrections
+     WHERE supplier_id = $1
+     ORDER BY created_at DESC
+     LIMIT 5`,
+    [supplier.id],
+  )
+
+  return { supplier, pos, aliases, corrections: correctionRows }
 }
 
 // ── LLM client ──────────────────────────────────────────────────────────────
@@ -254,12 +261,12 @@ export async function extract(emailId: string): Promise<string> {
   if (!rows.length) throw new Error(`email not found: ${emailId}`)
 
   const { sender, subject, body_text: bodyText } = rows[0]
-  const [{ supplier, pos, aliases }, { images: imageAttachments, texts: textAttachments }] =
+  const [{ supplier, pos, aliases, corrections }, { images: imageAttachments, texts: textAttachments }] =
     await Promise.all([loadContext(sender), loadAttachments(emailId)])
 
   // Base text: context + email body + all extractable document text
   const baseText = [
-    formatContext(supplier, pos, aliases),
+    formatContext(supplier, pos, aliases, corrections),
     `## Email\nFrom: ${sender}\nSubject: ${subject}\n\n${bodyText ?? '(no body)'}`,
     ...textAttachments.map((t) => `## Attachment: ${t.originalName}\n${t.text}`),
   ].join('\n\n')
@@ -366,18 +373,28 @@ export async function extract(emailId: string): Promise<string> {
 
 function startServer() {
   createServer(async (req, res) => {
-    if (req.method !== 'POST' || req.url !== '/extract') {
-      res.writeHead(404).end()
-      return
-    }
+    if (req.method !== 'POST') { res.writeHead(405).end(); return }
+
     const body = await new Promise<string>((resolve) => {
       let data = ''
       req.on('data', (chunk) => { data += chunk })
       req.on('end', () => resolve(data))
     })
+    const emailId = body.trim()
+
     try {
-      const runId = await extract(body.trim())
-      res.writeHead(200, { 'Content-Type': 'text/plain' }).end(runId)
+      if (req.url === '/extract') {
+        const runId = await extract(emailId)
+        res.writeHead(200, { 'Content-Type': 'text/plain' }).end(runId)
+      } else if (req.url === '/pipeline') {
+        // Extract then match in one call; returns JSON summary.
+        const runId = await extract(emailId)
+        const summary = await match(runId)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+          .end(JSON.stringify({ runId, ...summary }))
+      } else {
+        res.writeHead(404).end()
+      }
     } catch (err) {
       res.writeHead(500).end(String(err))
     }

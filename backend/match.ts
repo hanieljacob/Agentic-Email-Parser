@@ -9,10 +9,15 @@
  *   CLI: tsx backend/match.ts <extraction_run_uuid>
  */
 
+import { fileURLToPath } from 'url'
 import pg from 'pg'
+import { applyProposedChange } from '../src/writeback/apply.js'
+import { pool } from './db.js'
+import { parseSenderEmail } from '../src/utils/email.js'
 
-const { Pool } = pg
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+// Changes with combined_confidence >= this threshold are auto-applied without human review.
+// Set AUTO_APPLY_THRESHOLD=0 in .env to disable auto-apply entirely.
+const AUTO_APPLY_THRESHOLD = Number(process.env.AUTO_APPLY_THRESHOLD ?? 0.95)
 
 // ── types (mirrors the extraction schema) ────────────────────────────────────
 
@@ -38,6 +43,7 @@ interface LLMOutput {
 
 interface MatchSummary {
   proposed: number
+  autoApplied: number
   unmatched_pos: string[]
   unmatched_skus: Array<{ po_ref: string; sku_or_code: string }>
 }
@@ -147,6 +153,9 @@ function getOldValue(line: LineRow, field: string): string | null {
 // ── core match function ──────────────────────────────────────────────────────
 
 export async function match(runId: string): Promise<MatchSummary> {
+  const summary: MatchSummary = { proposed: 0, autoApplied: 0, unmatched_pos: [], unmatched_skus: [] }
+  const autoApplyIds: string[] = []
+
   const db = await pool.connect()
   try {
     const runRes = await db.query<{ email_id: string; llm_output: LLMOutput }>(
@@ -162,8 +171,7 @@ export async function match(runId: string): Promise<MatchSummary> {
       [emailId],
     )
     const sender = emailRes.rows[0]?.sender ?? ''
-    const addrMatch = sender.match(/<([^>]+)>/)
-    const senderEmail = (addrMatch ? addrMatch[1] : sender).toLowerCase()
+    const senderEmail = parseSenderEmail(sender)
 
     const supplierRes = await db.query<{ id: string }>(
       `SELECT s.id FROM supplier s WHERE lower(s.email) = $1
@@ -175,8 +183,6 @@ export async function match(runId: string): Promise<MatchSummary> {
       [senderEmail],
     )
     const supplierId = supplierRes.rows[0]?.id ?? null
-
-    const summary: MatchSummary = { proposed: 0, unmatched_pos: [], unmatched_skus: [] }
 
     await db.query('BEGIN')
 
@@ -202,8 +208,9 @@ export async function match(runId: string): Promise<MatchSummary> {
         const extractionConfidence = lu.confidence
         const matchConfidence      = poMatch.match_confidence * lineMatch.match_confidence
         const combinedConfidence   = extractionConfidence * matchConfidence
+        const willAutoApply        = combinedConfidence >= AUTO_APPLY_THRESHOLD
 
-        await db.query(
+        const insertRes = await db.query<{ id: string }>(
           `INSERT INTO proposed_changes
              (email_id, extraction_run_id,
               target_table, target_record_id, target_record_version,
@@ -211,7 +218,8 @@ export async function match(runId: string): Promise<MatchSummary> {
               evidence_text,
               extraction_confidence, match_confidence, combined_confidence,
               status)
-           VALUES ($1,$2,'purchase_order_line',$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending')`,
+           VALUES ($1,$2,'purchase_order_line',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+           RETURNING id`,
           [
             emailId, runId,
             lineMatch.row.id, lineMatch.row.version,
@@ -220,9 +228,11 @@ export async function match(runId: string): Promise<MatchSummary> {
             lu.new_value,
             lu.evidence,
             extractionConfidence, matchConfidence, combinedConfidence,
+            willAutoApply ? 'approved' : 'pending',
           ],
         )
         summary.proposed++
+        if (willAutoApply) autoApplyIds.push(insertRes.rows[0].id)
       }
     }
 
@@ -234,18 +244,28 @@ export async function match(runId: string): Promise<MatchSummary> {
     )
 
     await db.query('COMMIT')
-    return summary
   } catch (err) {
     await db.query('ROLLBACK').catch(() => {})
     throw err
   } finally {
     db.release()
   }
+
+  // Run auto-apply after the match transaction commits; each apply is its own transaction.
+  for (const id of autoApplyIds) {
+    try {
+      const result = await applyProposedChange(id, 'auto')
+      if (result.status === 'applied') summary.autoApplied++
+    } catch (err) {
+      console.error(`[match] auto-apply failed for ${id}:`, err)
+    }
+  }
+
+  return summary
 }
 
 // ── CLI entrypoint ───────────────────────────────────────────────────────────
 
-import { fileURLToPath } from 'url'
 if (fileURLToPath(import.meta.url) === process.argv[1]) {
   const arg = process.argv.slice(2).find((a) => a !== '--')
   if (!arg) {
@@ -255,7 +275,7 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
 
   match(arg)
     .then((s) => {
-      console.log(`proposed: ${s.proposed}`)
+      console.log(`proposed: ${s.proposed}  auto-applied: ${s.autoApplied}`)
       if (s.unmatched_pos.length)
         console.log(`unmatched POs: ${s.unmatched_pos.join(', ')}`)
       if (s.unmatched_skus.length)

@@ -7,6 +7,7 @@ Entry points:
 """
 
 import argparse
+import asyncio
 import email as _email
 import email.policy
 import email.utils
@@ -16,10 +17,11 @@ import re
 import sys
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 import psycopg
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 # Load .env from the project root (one level up from backend/)
@@ -27,6 +29,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 ATTACHMENTS_DIR = Path(os.environ.get("ATTACHMENTS_DIR", "./attachments"))
+EXTRACT_SERVER_URL = os.environ.get("EXTRACT_SERVER_URL", "http://localhost:8001")
 
 app = FastAPI()
 app.add_middleware(
@@ -79,14 +82,17 @@ def _save_attachments(msg) -> list[tuple[str, str, str]]:
     return saved
 
 
-def ingest(raw: bytes) -> str:
-    """Parse RFC 822 bytes, persist to DB (idempotent on content_hash), return uuid."""
+def ingest(raw: bytes) -> tuple[str, bool]:
+    """Parse RFC 822 bytes, persist to DB (idempotent on content_hash).
+
+    Returns (email_id, is_new). is_new is False for duplicate emails.
+    """
     content_hash = hashlib.sha256(raw).hexdigest()
     msg = _email.message_from_bytes(raw, policy=_email.policy.compat32)
 
-    message_id = (msg.get("Message-ID") or f"<{content_hash}@local>").strip()
-    sender = msg.get("From", "")
-    subject = msg.get("Subject", "")
+    message_id = str(msg.get("Message-ID") or f"<{content_hash}@local>").strip()
+    sender = str(msg.get("From", ""))
+    subject = str(msg.get("Subject", ""))
 
     date_str = msg.get("Date")
     try:
@@ -102,7 +108,7 @@ def ingest(raw: bytes) -> str:
             "SELECT id FROM emails WHERE content_hash = %s", (content_hash,)
         ).fetchone()
         if existing:
-            return str(existing[0])
+            return str(existing[0]), False
 
         row = conn.execute(
             """
@@ -125,12 +131,27 @@ def ingest(raw: bytes) -> str:
             )
 
         conn.commit()
-        return email_id
+        return email_id, True
+
+
+async def _trigger_pipeline(email_id: str) -> None:
+    """Fire extract→match pipeline for a newly ingested email. Best-effort."""
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            await client.post(f"{EXTRACT_SERVER_URL}/pipeline", content=email_id)
+    except Exception as exc:
+        print(f"[ingest] pipeline trigger failed for {email_id}: {exc}", flush=True)
 
 
 @app.post("/emails")
-async def http_ingest(request: Request) -> Response:
-    email_id = ingest(await request.body())
+async def http_ingest(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    no_pipeline: bool = False,
+) -> Response:
+    email_id, is_new = ingest(await request.body())
+    if is_new and not no_pipeline:
+        background_tasks.add_task(_trigger_pipeline, email_id)
     return Response(content=email_id, media_type="text/plain", status_code=200)
 
 
@@ -138,7 +159,10 @@ def cli_main() -> None:
     ap = argparse.ArgumentParser(description="Ingest an .eml file into the database.")
     ap.add_argument("path", help="Path to .eml file")
     args = ap.parse_args()
-    print(ingest(Path(args.path).read_bytes()))
+    email_id, is_new = ingest(Path(args.path).read_bytes())
+    print(email_id)
+    if not is_new:
+        print("(duplicate — already ingested)", file=sys.stderr)
 
 
 if __name__ == "__main__":

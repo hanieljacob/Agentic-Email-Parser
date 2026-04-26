@@ -13,7 +13,6 @@
     "lint": "eslint",
     "format": "prettier --check .",
     "check": "prettier --write . && eslint --fix",
-    "backend": "dotenv -e .env -- python3 backend/ingest.py",
     "extract-server": "dotenv -e .env -- tsx backend/extract.ts --server",
     "migrate": "dotenv -e .env -- bash -c 'for f in migrations/*.sql; do echo \"--- $f\"; psql $DATABASE_URL < $f; done'",
     "ingest": "dotenv -e .env -- python3 backend/ingest.py",
@@ -21,6 +20,7 @@
     "match": "dotenv -e .env -- tsx backend/match.ts",
     "seed": "dotenv -e .env -- tsx backend/scripts/seed.ts",
     "api": "dotenv -e .env -- tsx backend/api.ts",
+    "worker": "dotenv -e .env -- tsx backend/worker.ts",
     "setup": "createdb email_parser || true && pnpm migrate && pip install -r backend/requirements.txt"
   },
   "dependencies": {

@@ -10,7 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ReviewRouteImport } from './routes/review'
-import { Route as AboutRouteImport } from './routes/about'
+import { Route as MonitoringRouteImport } from './routes/monitoring'
 import { Route as IndexRouteImport } from './routes/index'
 
 const ReviewRoute = ReviewRouteImport.update({
@@ -18,9 +18,9 @@ const ReviewRoute = ReviewRouteImport.update({
   path: '/review',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AboutRoute = AboutRouteImport.update({
-  id: '/about',
-  path: '/about',
+const MonitoringRoute = MonitoringRouteImport.update({
+  id: '/monitoring',
+  path: '/monitoring',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -31,31 +31,31 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/about': typeof AboutRoute
+  '/monitoring': typeof MonitoringRoute
   '/review': typeof ReviewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/about': typeof AboutRoute
+  '/monitoring': typeof MonitoringRoute
   '/review': typeof ReviewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/about': typeof AboutRoute
+  '/monitoring': typeof MonitoringRoute
   '/review': typeof ReviewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/about' | '/review'
+  fullPaths: '/' | '/monitoring' | '/review'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/about' | '/review'
-  id: '__root__' | '/' | '/about' | '/review'
+  to: '/' | '/monitoring' | '/review'
+  id: '__root__' | '/' | '/monitoring' | '/review'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AboutRoute: typeof AboutRoute
+  MonitoringRoute: typeof MonitoringRoute
   ReviewRoute: typeof ReviewRoute
 }
 
@@ -68,11 +68,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ReviewRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/about': {
-      id: '/about'
-      path: '/about'
-      fullPath: '/about'
-      preLoaderRoute: typeof AboutRouteImport
+    '/monitoring': {
+      id: '/monitoring'
+      path: '/monitoring'
+      fullPath: '/monitoring'
+      preLoaderRoute: typeof MonitoringRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -87,7 +87,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AboutRoute: AboutRoute,
+  MonitoringRoute: MonitoringRoute,
   ReviewRoute: ReviewRoute,
 }
 export const routeTree = rootRouteImport

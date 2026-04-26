@@ -1,11 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { useState } from 'react'
-import pg from 'pg'
 import { applyProposedChange } from '../writeback/apply.js'
-
-const { Pool } = pg
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+import { pool } from '#/db.js'
 
 // ── server functions ──────────────────────────────────────────────────────────
 
@@ -57,11 +54,11 @@ const applyChange = createServerFn({ method: 'POST' })
   })
 
 const rejectChange = createServerFn({ method: 'POST' })
-  .inputValidator((id: string) => id)
-  .handler(async ({ data: id }) => {
+  .inputValidator((data: { id: string; reason: string }) => data)
+  .handler(async ({ data }) => {
     await pool.query(
-      `UPDATE proposed_changes SET status = 'rejected' WHERE id = $1`,
-      [id],
+      `UPDATE proposed_changes SET status = 'rejected', rejection_reason = $2 WHERE id = $1`,
+      [data.id, data.reason],
     )
     return { ok: true }
   })
@@ -75,20 +72,39 @@ export const Route = createFileRoute('/review')({
 
 type Change = Awaited<ReturnType<typeof listPending>>[number]
 
+const REJECTION_REASONS = [
+  { value: 'wrong_date_format',  label: 'Wrong date format (MM/DD vs DD/MM)' },
+  { value: 'wrong_sku',          label: 'Wrong SKU / product' },
+  { value: 'not_a_po_update',    label: 'Not a real PO update' },
+  { value: 'quantity_is_delta',  label: 'Quantity is a delta, not absolute total' },
+  { value: 'wrong_po_reference', label: 'Wrong PO reference' },
+  { value: 'llm_hallucination',  label: 'LLM hallucination / invented data' },
+  { value: 'other',              label: 'Other' },
+] as const
+
 function ChangeCard({ change, onDone }: { change: Change; onDone: () => void }) {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<string | null>(null)
+  const [rejectOpen, setRejectOpen] = useState(false)
+  const [rejectionReason, setRejectionReason] = useState<string>('other')
 
-  async function handle(action: 'apply' | 'reject') {
+  async function handleApply() {
     setBusy(true)
     try {
-      if (action === 'apply') {
-        const r = await applyChange({ data: change.id })
-        setResult(r.status === 'superseded' ? 'Superseded — record changed before apply.' : 'Applied')
-      } else {
-        await rejectChange({ data: change.id })
-        setResult('Rejected')
-      }
+      const r = await applyChange({ data: change.id })
+      setResult(r.status === 'superseded' ? 'Superseded — record changed before apply.' : 'Applied')
+      setTimeout(onDone, 800)
+    } catch (err) {
+      setResult(`Error: ${err instanceof Error ? err.message : String(err)}`)
+      setBusy(false)
+    }
+  }
+
+  async function handleReject() {
+    setBusy(true)
+    try {
+      await rejectChange({ data: { id: change.id, reason: rejectionReason } })
+      setResult('Rejected')
       setTimeout(onDone, 800)
     } catch (err) {
       setResult(`Error: ${err instanceof Error ? err.message : String(err)}`)
@@ -137,18 +153,47 @@ function ChangeCard({ change, onDone }: { change: Change; onDone: () => void }) 
       {/* actions */}
       {result ? (
         <p className="text-sm font-medium text-[var(--lagoon-deep)]">{result}</p>
+      ) : rejectOpen ? (
+        <div className="flex flex-col gap-2">
+          <label className="text-xs font-medium text-[var(--muted)]">Reason for rejection</label>
+          <select
+            value={rejectionReason}
+            onChange={(e) => setRejectionReason(e.target.value)}
+            className="rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-1.5 text-sm"
+          >
+            {REJECTION_REASONS.map((r) => (
+              <option key={r.value} value={r.value}>{r.label}</option>
+            ))}
+          </select>
+          <div className="flex gap-2">
+            <button
+              disabled={busy}
+              onClick={handleReject}
+              className="rounded-lg bg-red-600 px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            >
+              Confirm reject
+            </button>
+            <button
+              disabled={busy}
+              onClick={() => setRejectOpen(false)}
+              className="rounded-lg border border-[var(--line)] px-4 py-1.5 text-sm font-semibold hover:bg-[var(--chip-bg)] disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       ) : (
         <div className="flex gap-2">
           <button
             disabled={busy}
-            onClick={() => handle('apply')}
+            onClick={handleApply}
             className="rounded-lg bg-[var(--lagoon-deep)] px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
           >
             Approve
           </button>
           <button
             disabled={busy}
-            onClick={() => handle('reject')}
+            onClick={() => setRejectOpen(true)}
             className="rounded-lg border border-[var(--line)] px-4 py-1.5 text-sm font-semibold hover:bg-[var(--chip-bg)] disabled:opacity-50"
           >
             Reject

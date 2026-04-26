@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { assignSupplier } from '../learning/aliases.js'
+import { assignSupplier } from '../src/learning/aliases.js'
 
 const router = Router()
 

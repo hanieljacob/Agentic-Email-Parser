@@ -121,6 +121,14 @@ mentioned in the email — do not invent entries.
 export interface Supplier {
   id: string
   name: string
+  llm_notes: string | null
+}
+
+export interface CorrectionRow {
+  context: string
+  wrong: string
+  correct: string
+  field: string
 }
 
 export interface PORow {
@@ -142,11 +150,15 @@ export function formatContext(
   supplier: Supplier | null,
   pos: PORow[],
   aliases: AliasRow[],
+  corrections: CorrectionRow[] = [],
 ): string {
   const parts: string[] = []
 
   if (supplier) {
     parts.push(`## Known Supplier\nName: ${supplier.name}`)
+    if (supplier.llm_notes) {
+      parts.push(`## Supplier Notes\n${supplier.llm_notes}`)
+    }
   } else {
     parts.push(
       '## Supplier\nUnknown — sender address did not match any known supplier. ' +
@@ -176,6 +188,17 @@ export function formatContext(
     for (const a of aliases) {
       parts.push(`  ${a.supplier_sku}  →  ${a.sku}  (${a.product_name})`)
     }
+  }
+
+  if (corrections.length > 0) {
+    parts.push(
+      '\n## Past Extraction Corrections for This Supplier\n' +
+      'These extractions were previously wrong. Do not repeat the same mistakes:\n' +
+      corrections.map((c) =>
+        `  - evidence: "${c.context}"\n` +
+        `    field: ${c.field} | extracted: ${c.wrong} | correct: ${c.correct}`
+      ).join('\n'),
+    )
   }
 
   return parts.join('\n')
