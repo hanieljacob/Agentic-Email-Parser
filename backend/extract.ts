@@ -15,7 +15,9 @@ import { fileURLToPath } from 'url'
 import OpenAI from 'openai'
 import pg from 'pg'
 import { z } from 'zod'
-import { zodToJsonSchema } from 'zod-to-json-schema'
+import { PDFParse } from 'pdf-parse'
+import mammoth from 'mammoth'
+import XLSX from 'xlsx'
 
 import { SYSTEM_PROMPT, formatContext } from './prompt.js'
 
@@ -138,7 +140,71 @@ interface ImageAttachment {
   base64: string
 }
 
-async function loadImageAttachments(emailId: string): Promise<ImageAttachment[]> {
+interface TextAttachment {
+  originalName: string
+  mimeType: string
+  text: string
+}
+
+// ── document text extraction ─────────────────────────────────────────────────
+
+const XLSX_MIME_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/x-excel',
+])
+
+const DOCX_MIME_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/msword',
+])
+
+async function extractDocumentText(
+  data: Buffer,
+  mimeType: string,
+  originalName: string,
+): Promise<string | null> {
+  try {
+    if (mimeType === 'application/pdf') {
+      const parser = new PDFParse({ data })
+      const result = await parser.getText()
+      const text = result.text.trim()
+      if (text) return text
+      // No text layer — likely a scanned image PDF
+      return `[Scanned PDF — no text layer detected. A reviewer should inspect "${originalName}" directly.]`
+    }
+
+    if (XLSX_MIME_TYPES.has(mimeType)) {
+      const wb = XLSX.read(data, { type: 'buffer' })
+      return wb.SheetNames.map((name) => {
+        const ws = wb.Sheets[name]
+        return `[Sheet: ${name}]\n${XLSX.utils.sheet_to_csv(ws)}`
+      }).join('\n\n')
+    }
+
+    if (DOCX_MIME_TYPES.has(mimeType)) {
+      const result = await mammoth.extractRawText({ buffer: data })
+      return result.value.trim() || null
+    }
+
+    if (mimeType === 'text/csv' || mimeType === 'text/plain') {
+      return data.toString('utf-8').trim() || null
+    }
+
+    return null // unsupported format — silently skip
+  } catch {
+    return null
+  }
+}
+
+// ── attachment loading ────────────────────────────────────────────────────────
+
+interface AttachmentResult {
+  images: ImageAttachment[]
+  texts: TextAttachment[]
+}
+
+async function loadAttachments(emailId: string): Promise<AttachmentResult> {
   const { rows } = await pool.query<{
     stored_name: string
     original_name: string
@@ -146,24 +212,36 @@ async function loadImageAttachments(emailId: string): Promise<ImageAttachment[]>
   }>(
     `SELECT stored_name, original_name, mime_type
      FROM email_attachments
-     WHERE email_id = $1 AND mime_type LIKE 'image/%'`,
+     WHERE email_id = $1`,
     [emailId],
   )
 
-  const results: ImageAttachment[] = []
+  const images: ImageAttachment[] = []
+  const texts: TextAttachment[] = []
+
   for (const row of rows) {
+    let data: Buffer
     try {
-      const data = await fs.readFile(path.join(ATTACHMENTS_DIR, row.stored_name))
-      results.push({
+      data = await fs.readFile(path.join(ATTACHMENTS_DIR, row.stored_name))
+    } catch {
+      continue // skip unreadable files
+    }
+
+    if (row.mime_type.startsWith('image/')) {
+      images.push({
         originalName: row.original_name,
         mimeType: row.mime_type,
         base64: data.toString('base64'),
       })
-    } catch {
-      // Skip unreadable files rather than failing the whole extraction
+    } else {
+      const text = await extractDocumentText(data, row.mime_type, row.original_name)
+      if (text !== null) {
+        texts.push({ originalName: row.original_name, mimeType: row.mime_type, text })
+      }
     }
   }
-  return results
+
+  return { images, texts }
 }
 
 // ── core extraction ─────────────────────────────────────────────────────────
@@ -176,14 +254,14 @@ export async function extract(emailId: string): Promise<string> {
   if (!rows.length) throw new Error(`email not found: ${emailId}`)
 
   const { sender, subject, body_text: bodyText } = rows[0]
-  const [{ supplier, pos, aliases }, imageAttachments] = await Promise.all([
-    loadContext(sender),
-    loadImageAttachments(emailId),
-  ])
+  const [{ supplier, pos, aliases }, { images: imageAttachments, texts: textAttachments }] =
+    await Promise.all([loadContext(sender), loadAttachments(emailId)])
 
-  const emailText = [
+  // Base text: context + email body + all extractable document text
+  const baseText = [
     formatContext(supplier, pos, aliases),
     `## Email\nFrom: ${sender}\nSubject: ${subject}\n\n${bodyText ?? '(no body)'}`,
+    ...textAttachments.map((t) => `## Attachment: ${t.originalName}\n${t.text}`),
   ].join('\n\n')
 
   type ContentPart =
@@ -192,9 +270,9 @@ export async function extract(emailId: string): Promise<string> {
 
   const userContent: string | ContentPart[] =
     imageAttachments.length === 0
-      ? emailText
+      ? baseText
       : [
-          { type: 'text', text: emailText },
+          { type: 'text', text: baseText },
           ...imageAttachments.map((img): ContentPart => ({
             type: 'image_url',
             image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
@@ -238,7 +316,7 @@ export async function extract(emailId: string): Promise<string> {
       const msg = String(visionErr)
       if (Array.isArray(userContent) && (msg.includes('image') || msg.includes('500'))) {
         console.error('[extract] Vision call failed, retrying text-only:', msg)
-        raw = await callLLM(emailText)
+        raw = await callLLM(baseText)
       } else {
         throw visionErr
       }

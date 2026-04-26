@@ -1,4 +1,4 @@
-import { createFileRoute, useRouter } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { useState } from 'react'
 import pg from 'pg'
@@ -161,14 +161,7 @@ function ChangeCard({ change, onDone }: { change: Change; onDone: () => void }) 
 
 function ReviewPage() {
   const initial = Route.useLoaderData()
-  const router = useRouter()
   const [changes, setChanges] = useState(initial)
-
-  function refresh() {
-    router.invalidate().then(() => {
-      listPending().then(setChanges)
-    })
-  }
 
   if (changes.length === 0) {
     return (
