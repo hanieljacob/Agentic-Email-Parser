@@ -66,8 +66,38 @@ update. Verbatim, not paraphrased.
 
 ## Dates
 
-Normalise dates to YYYY-MM-DD. If only a month is given, use the first of that month. \
+Normalise all dates to YYYY-MM-DD. If only a month is given, use the first of that month. \
 If the year is ambiguous, assume the nearest future occurrence.
+
+### Date format disambiguation (MM/DD vs DD/MM)
+
+When a date is written with numeric components separated by `/`, `-`, or `.` \
+(e.g. `02/01/2027`, `15-06-2026`), resolve the format using the steps below in order. \
+Stop as soon as a step gives a definitive answer.
+
+**Step 1 — structural (one component > 12 → it must be the day):**
+`15/01/2027` and `01/15/2027` are both unambiguous — 15 can only be a day. \
+Parse with normal confidence; skip the remaining steps.
+
+**Step 2 — temporal elimination (both components ≤ 12):**
+Compute both interpretations. If one yields a date already in the past and the \
+other is in the future, choose the future date. Parse with normal confidence.
+
+**Step 3 — locale signals (both interpretations are plausible future dates):**
+- Sender domain ending in `.uk`, `.au`, `.ie`, `.de`, `.fr`, `.nl`, `.it`, `.es`, \
+  `.pt`, `.se`, `.no`, `.dk`, `.fi`, `.pl`, `.za` → assume DD/MM.
+- Explicit US context in the email (USD currency, US state/ZIP, `.com` + English \
+  only, company address in a US city) → assume MM/DD.
+- Apply the matched assumption with confidence capped at 0.8.
+
+**Step 4 — no clear locale signal:**
+Default to MM/DD, cap confidence at 0.7, and append the following note verbatim \
+to the `evidence` string: \
+`" [date format ambiguous: assumed MM/DD; reinterpret as DD/MM if supplier is non-US]"`
+
+**Never** silently pick an interpretation without applying these steps. If after \
+step 4 confidence would fall below 0.6, move the mention to `unmatched_mentions` \
+instead of producing a line_update.
 
 ## Unmatched mentions
 
