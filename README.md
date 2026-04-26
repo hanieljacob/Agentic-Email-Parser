@@ -1,258 +1,218 @@
-Welcome to your new TanStack Start app! 
+# Agentic Email Parser
 
-# Getting Started
+Automatically ingests supplier emails, extracts purchase order (PO) updates using an LLM, matches them to canonical DB records, and either auto-applies high-confidence changes or routes them to a human review queue.
 
-To run this application:
+---
+
+## How it works
+
+```
+Supplier email
+      │
+      ▼
+┌─────────────┐     RFC 822      ┌──────────────────┐
+│  Ingest     │ ───────────────► │  Extract (LLM)   │
+│  (Python /  │                  │  OpenRouter API  │
+│  FastAPI)   │                  └────────┬─────────┘
+└─────────────┘                           │ structured JSON
+                                          ▼
+                                 ┌──────────────────┐
+                                 │  Match           │
+                                 │  PO ref + SKU →  │
+                                 │  DB records      │
+                                 └────────┬─────────┘
+                              confidence ≥ 0.95?
+                                 ┌────────┴─────────┐
+                                Yes                  No
+                                 ▼                   ▼
+                          Auto-apply           Review queue
+                          (writeback)          /review UI
+```
+
+### Pipeline stages
+
+| Stage | Entry point | What it does |
+|---|---|---|
+| **Ingest** | `backend/ingest.py` (FastAPI, port 8000) | Parses RFC 822 email, saves to DB, extracts attachments, fires pipeline trigger |
+| **Extract** | `backend/extract.ts` (HTTP server, port 8001) | Builds LLM context from supplier history + corrections, calls OpenRouter, validates JSON output |
+| **Match** | `backend/match.ts` | Resolves PO ref and SKU to canonical DB rows, scores confidence, inserts `proposed_changes` |
+| **Review** | `/review` (TanStack Start UI) | Human approves or rejects pending changes with a reason |
+| **Writeback** | `src/writeback/apply.ts` | Applies approved change to `purchase_order_line` with optimistic locking and audit log |
+
+---
+
+## Setup
+
+### Prerequisites
+
+- Node.js 20+, pnpm
+- Python 3.12+
+- PostgreSQL (local or remote)
+- An [OpenRouter](https://openrouter.ai) API key
+
+### First-time setup
 
 ```bash
-npm install
-npm run dev
+# 1. Install JS dependencies
+pnpm install
+
+# 2. Install Python dependencies
+pip install -r backend/requirements.txt
+
+# 3. Copy and fill in environment variables
+cp .env.example .env   # then edit .env
+
+# 4. Create the database, run all migrations, install Python deps
+pnpm setup
+
+# 5. Seed canonical tables from backend/data/db.xlsx
+pnpm seed
 ```
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATABASE_URL` | — | PostgreSQL connection string |
+| `OPENROUTER_API_KEY` | — | OpenRouter API key |
+| `MODEL_NAME` | `anthropic/claude-sonnet-4` | LLM model used for extraction |
+| `EXTRACT_SERVER_URL` | `http://localhost:8001` | URL of the extract server (used by ingest + worker) |
+| `AUTO_APPLY_THRESHOLD` | `0.95` | Combined confidence threshold for auto-apply; set to `0` to disable |
+| `ATTACHMENTS_DIR` | `./attachments` | Directory where email attachments are stored |
+| `API_PORT` | `8002` | Port for the REST writeback API |
+| `WORKER_INTERVAL_SECONDS` | `60` | How often the retry worker polls for stuck emails |
+| `WORKER_GRACE_SECONDS` | `120` | Minimum age before a stuck email is retried |
+| `WORKER_MAX_RETRIES` | `3` | Maximum pipeline retry attempts per email |
+
+---
+
+## Running
+
+Start each service in a separate terminal:
+
+```bash
+pnpm ingest          # Python ingest server  →  http://localhost:8000
+pnpm extract-server  # LLM extraction server →  http://localhost:8001
+pnpm dev             # Frontend (TanStack Start) → http://localhost:3000
+```
+
+Optional:
+```bash
+pnpm worker          # Retry worker — re-triggers stuck emails automatically
+pnpm api             # REST writeback API → http://localhost:8002
+```
+
+---
+
+## Submitting an email
+
+**Via the UI** — open `http://localhost:3000`, fill in the compose form and click Send.
+
+**Via curl** — POST a raw `.eml` file directly to the ingest server:
+```bash
+curl -X POST http://localhost:8000/emails --data-binary @email.eml
+```
+
+---
+
+## Features
+
+### Attachment support
+
+The extraction step reads text from all common attachment types:
+
+| Format | Extraction method |
+|---|---|
+| Images (`image/*`) | Passed as base64 vision inputs to the LLM |
+| PDF | Text layer extracted via `pdf-parse`; scanned PDFs get a reviewer note |
+| Word (`.docx`) | Raw text via `mammoth` |
+| Excel (`.xlsx`, `.xls`, `.csv`) | Each sheet converted to CSV via `xlsx` |
+| Plain text | Read directly |
+
+### Confidence-based auto-apply
+
+Each proposed change gets a `combined_confidence` score (extraction confidence × match confidence). Changes above `AUTO_APPLY_THRESHOLD` (default 0.95) are applied immediately without human review. All changes — auto-applied or manual — are recorded in the immutable `audit_log`.
+
+### Feedback loop
+
+Three layers of learning that improve extraction accuracy over time:
+
+1. **Rejection reasons** — reviewers select a structured reason when rejecting a change (`wrong_sku`, `wrong_date_format`, etc.); visible per supplier on the Monitoring page.
+2. **Supplier notes** — set `supplier.llm_notes` to inject free-text guidance into the extraction prompt for that supplier.
+3. **Few-shot corrections** — approving a SKU correction via the API writes to `supplier_corrections`; the next extraction for that supplier includes up to 5 recent corrections as examples.
+
+### Retry worker
+
+`pnpm worker` polls for emails stuck in `ingested` or `failed` status and re-triggers the pipeline, up to `WORKER_MAX_RETRIES` attempts.
+
+### Monitoring
+
+`http://localhost:3000/monitoring` shows:
+- Pipeline health (email counts by status, green/yellow/red indicator)
+- Proposed changes summary (pending, auto-applied, rejected, average confidence)
+- Stuck emails table
+- Rejection patterns per supplier with a prompt to set `llm_notes` when patterns emerge
 
 ---
 
 ## Database schema
 
-Canonical tables (singular names, matching `backend/data/db.xlsx`):
+### Canonical tables (seeded from `backend/data/db.xlsx`)
 
 | Table | Key columns |
 |---|---|
 | `product` | `sku`, `title` |
-| `supplier` | `name`, `email` (primary resolution address) |
+| `supplier` | `name`, `email`, `llm_notes` |
 | `purchase_order` | `reference_num`, `supplier_id`, `delivery_date` |
-| `purchase_order_line` | `purchase_order_id`, `product_id`, `quantity`, `delivery_date` |
-| `supplier_product` | `(supplier_id, product_id)` PK, `supplier_sku`, `price_per_unit` |
+| `purchase_order_line` | `purchase_order_id`, `product_id`, `quantity`, `delivery_date`, `version` |
+| `supplier_product` | `(supplier_id, product_id)`, `supplier_sku`, `price_per_unit` |
 
-Pipeline tables (unchanged): `emails`, `extraction_runs`, `proposed_changes`, `audit_log`, `supplier_email_aliases`.
+### Pipeline tables
 
-All canonical tables carry `legacy_id integer` (the integer PK from the xlsx) for seed traceability. These are kept permanently so the xlsx row can always be traced to its uuid.
+| Table | Purpose |
+|---|---|
+| `emails` | Ingested emails with status (`ingested` → `extracted` → `matched`/`failed`) |
+| `email_attachments` | Attachment metadata; files stored at `ATTACHMENTS_DIR/<sha256><ext>` |
+| `extraction_runs` | LLM output per email; links emails → proposed_changes |
+| `proposed_changes` | One row per field change; status: `pending`, `approved`, `applied`, `rejected`, `superseded` |
+| `audit_log` | Immutable write history (insert-only, enforced by trigger) |
+| `supplier_email_aliases` | Maps additional sender addresses to suppliers |
+| `supplier_corrections` | Few-shot SKU correction examples injected into future prompts |
 
-### Running migrations
+### Views (migration 0013)
 
-```bash
-pnpm migrate
-```
+| View | Purpose |
+|---|---|
+| `pipeline_status` | Email counts by status — used by Monitoring page |
+| `rejection_patterns` | Per-supplier rejection counts by reason — used by Monitoring page |
 
-### Seeding from db.xlsx
+---
 
-```bash
-pnpm seed
-```
+## REST API
 
-The seed script truncates all canonical tables and re-inserts from `backend/data/db.xlsx`. It also creates one `supplier_email_aliases` row per supplier pointing at `supplier.email`, so alias-based sender resolution works out of the box. Safe to run multiple times in development.
-
-# Building For Production
-
-To build this application for production:
-
-```bash
-npm run build
-```
-
-## Attachment processing
-
-Image attachments (`image/*` MIME types) are included in the LLM extraction call as base64-encoded vision inputs alongside the email body.
-
-**Limitations:**
-- PDF and document attachments (Word, Excel, etc.) are not processed — the LLM only sees their filenames are present, not their contents.
-- Attachments are stored at `./attachments/<sha256><ext>` and tracked in the `email_attachments` table. Previously ingested emails will not have `email_attachments` rows; re-ingesting them will populate the table.
-
-## Writeback API
-
-Run `pnpm api` to start the writeback server on port 8002 (configurable via `API_PORT`).
+Start with `pnpm api` (port 8002).
 
 | Method | Path | Body | Action |
 |---|---|---|---|
-| `POST` | `/proposed-changes/:id/apply` | `{ applied_by?: string }` | Writes the approved change to `purchase_order_line` (version-safe; marks superseded on conflict) |
-| `POST` | `/proposed-changes/:id/correct-sku` | `{ correct_product_id: string }` | Records the supplier's SKU mapping and re-points the proposed change at the right line |
-| `POST` | `/emails/:id/assign-supplier` | `{ supplier_id: string, retrigger?: boolean }` | Links the sender address to a supplier and, by default, re-runs extract + match on the email |
+| `POST` | `/proposed-changes/:id/apply` | `{ applied_by?: string }` | Applies change to `purchase_order_line` (version-safe; marks superseded on conflict) |
+| `POST` | `/proposed-changes/:id/correct-sku` | `{ correct_product_id: string }` | Records supplier SKU mapping, re-points proposed change at correct line |
+| `POST` | `/emails/:id/assign-supplier` | `{ supplier_id: string, retrigger?: boolean }` | Links sender address to supplier; optionally re-runs extract + match |
+| `GET` | `/health` | — | Health check |
 
-### Enabling auto-apply
+---
 
-Currently every proposed change lands in `pending` and waits for human review. To enable auto-apply, add a confidence threshold check in `backend/extract.ts` before inserting the row: if the LLM returns a `confidence` score above a chosen threshold (e.g. 0.95), call `applyProposedChange` directly instead of leaving the status as `pending`. Because `applyProposedChange` is already transactional and version-safe, the only change required is that routing decision — no schema or writeback logic changes are needed.
-
-## Testing
-
-This project uses [Vitest](https://vitest.dev/) for testing. You can run the tests with:
+## Scripts
 
 ```bash
-npm run test
+pnpm dev             # Start frontend dev server
+pnpm ingest          # Start Python ingest server (port 8000)
+pnpm extract-server  # Start LLM extract server (port 8001)
+pnpm worker          # Start retry worker
+pnpm api             # Start REST API server (port 8002)
+pnpm migrate         # Run all SQL migrations in order
+pnpm seed            # Seed canonical tables from backend/data/db.xlsx
+pnpm setup           # First-time: create DB + migrate + pip install
+pnpm build           # Production build
+pnpm test            # Run Vitest test suite
+pnpm check           # Prettier + ESLint fix
 ```
-
-## Styling
-
-This project uses [Tailwind CSS](https://tailwindcss.com/) for styling.
-
-### Removing Tailwind CSS
-
-If you prefer not to use Tailwind CSS:
-
-1. Remove the demo pages in `src/routes/demo/`
-2. Replace the Tailwind import in `src/styles.css` with your own styles
-3. Remove `tailwindcss()` from the plugins array in `vite.config.ts`
-4. Uninstall the packages: `npm install @tailwindcss/vite tailwindcss -D`
-
-## Linting & Formatting
-
-
-This project uses [eslint](https://eslint.org/) and [prettier](https://prettier.io/) for linting and formatting. Eslint is configured using [tanstack/eslint-config](https://tanstack.com/config/latest/docs/eslint). The following scripts are available:
-
-```bash
-npm run lint
-npm run format
-npm run check
-```
-
-
-
-## Routing
-
-This project uses [TanStack Router](https://tanstack.com/router) with file-based routing. Routes are managed as files in `src/routes`.
-
-### Adding A Route
-
-To add a new route to your application just add a new file in the `./src/routes` directory.
-
-TanStack will automatically generate the content of the route file for you.
-
-Now that you have two routes you can use a `Link` component to navigate between them.
-
-### Adding Links
-
-To use SPA (Single Page Application) navigation you will need to import the `Link` component from `@tanstack/react-router`.
-
-```tsx
-import { Link } from "@tanstack/react-router";
-```
-
-Then anywhere in your JSX you can use it like so:
-
-```tsx
-<Link to="/about">About</Link>
-```
-
-This will create a link that will navigate to the `/about` route.
-
-More information on the `Link` component can be found in the [Link documentation](https://tanstack.com/router/v1/docs/framework/react/api/router/linkComponent).
-
-### Using A Layout
-
-In the File Based Routing setup the layout is located in `src/routes/__root.tsx`. Anything you add to the root route will appear in all the routes. The route content will appear in the JSX where you render `{children}` in the `shellComponent`.
-
-Here is an example layout that includes a header:
-
-```tsx
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
-
-export const Route = createRootRoute({
-  head: () => ({
-    meta: [
-      { charSet: 'utf-8' },
-      { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-      { title: 'My App' },
-    ],
-  }),
-  shellComponent: ({ children }) => (
-    <html lang="en">
-      <head>
-        <HeadContent />
-      </head>
-      <body>
-        <header>
-          <nav>
-            <Link to="/">Home</Link>
-            <Link to="/about">About</Link>
-          </nav>
-        </header>
-        {children}
-        <Scripts />
-      </body>
-    </html>
-  ),
-})
-```
-
-More information on layouts can be found in the [Layouts documentation](https://tanstack.com/router/latest/docs/framework/react/guide/routing-concepts#layouts).
-
-## Server Functions
-
-TanStack Start provides server functions that allow you to write server-side code that seamlessly integrates with your client components.
-
-```tsx
-import { createServerFn } from '@tanstack/react-start'
-
-const getServerTime = createServerFn({
-  method: 'GET',
-}).handler(async () => {
-  return new Date().toISOString()
-})
-
-// Use in a component
-function MyComponent() {
-  const [time, setTime] = useState('')
-  
-  useEffect(() => {
-    getServerTime().then(setTime)
-  }, [])
-  
-  return <div>Server time: {time}</div>
-}
-```
-
-## API Routes
-
-You can create API routes by using the `server` property in your route definitions:
-
-```tsx
-import { createFileRoute } from '@tanstack/react-router'
-import { json } from '@tanstack/react-start'
-
-export const Route = createFileRoute('/api/hello')({
-  server: {
-    handlers: {
-      GET: () => json({ message: 'Hello, World!' }),
-    },
-  },
-})
-```
-
-## Data Fetching
-
-There are multiple ways to fetch data in your application. You can use TanStack Query to fetch data from a server. But you can also use the `loader` functionality built into TanStack Router to load the data for a route before it's rendered.
-
-For example:
-
-```tsx
-import { createFileRoute } from '@tanstack/react-router'
-
-export const Route = createFileRoute('/people')({
-  loader: async () => {
-    const response = await fetch('https://swapi.dev/api/people')
-    return response.json()
-  },
-  component: PeopleComponent,
-})
-
-function PeopleComponent() {
-  const data = Route.useLoaderData()
-  return (
-    <ul>
-      {data.results.map((person) => (
-        <li key={person.name}>{person.name}</li>
-      ))}
-    </ul>
-  )
-}
-```
-
-Loaders simplify your data fetching logic dramatically. Check out more information in the [Loader documentation](https://tanstack.com/router/latest/docs/framework/react/guide/data-loading#loader-parameters).
-
-# Demo files
-
-Files prefixed with `demo` can be safely deleted. They are there to provide a starting point for you to play around with the features you've installed.
-
-# Learn More
-
-You can learn more about all of the offerings from TanStack in the [TanStack documentation](https://tanstack.com).
-
-For TanStack Start specific documentation, visit [TanStack Start](https://tanstack.com/start).
