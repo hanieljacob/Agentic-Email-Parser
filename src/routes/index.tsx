@@ -4,22 +4,34 @@ import {
   Paperclip,
   X,
   Send,
-  File,
-  Image,
+  File as FileIcon,
+  Image as ImageIcon,
   FileText,
   Sheet,
   CheckCircle2,
   Loader2,
   Plus,
-  ArrowUpRight,
+  Inbox,
 } from 'lucide-react'
-import { api } from '#/lib/api'
 
-// ── route ─────────────────────────────────────────────────────────────────────
+import { api } from '#/lib/api'
+import { Button } from '#/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '#/components/ui/card'
+import { Input } from '#/components/ui/input'
+import { Label } from '#/components/ui/label'
+import { Separator } from '#/components/ui/separator'
+import { Textarea } from '#/components/ui/textarea'
 
 export const Route = createFileRoute('/')({ component: ComposePage })
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -31,71 +43,83 @@ function wordCount(text: string): number {
   return text.trim() === '' ? 0 : text.trim().split(/\s+/).length
 }
 
-// ─── completeness dots ────────────────────────────────────────────────────────
+/**
+ * Attachments are grouped by how the extractor treats them, not by extension:
+ * images go to the model as vision input, PDFs and spreadsheets are
+ * text-extracted first, and anything else is skipped. "other" stays neutral
+ * because that is the honest signal that nothing will be read from it.
+ */
+type FileKind = 'image' | 'pdf' | 'sheet' | 'other'
 
-function CompletenessBar({
+function fileKind(type: string, name: string): FileKind {
+  if (type.startsWith('image/')) return 'image'
+  if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf'
+  if (
+    type.includes('spreadsheet') ||
+    type.includes('excel') ||
+    type === 'text/csv' ||
+    /\.(xlsx?|csv)$/i.test(name)
+  )
+    return 'sheet'
+  return 'other'
+}
+
+const KIND_ICON = {
+  image: ImageIcon,
+  pdf: FileText,
+  sheet: Sheet,
+  other: FileIcon,
+} as const
+
+const KIND_LABEL = {
+  image: 'read as an image',
+  pdf: 'text extracted',
+  sheet: 'text extracted',
+  other: 'not parsed',
+} as const
+
+// ── readiness ────────────────────────────────────────────────────────────────
+
+/** Each segment fills green as its field is satisfied — state, not decoration. */
+function Readiness({
   steps,
 }: {
-  steps: { label: string; done: boolean }[]
+  steps: Array<{ label: string; done: boolean }>
 }) {
   const filled = steps.filter((s) => s.done).length
+  const ready = filled === steps.length
+
   return (
     <div className="flex items-center gap-2">
-      <div className="flex gap-1">
+      <div
+        className="flex gap-1"
+        role="img"
+        aria-label={`${filled} of ${steps.length} fields complete`}
+      >
         {steps.map((step) => (
           <span
             key={step.label}
             title={step.label}
-            className={`block h-1.5 w-5 rounded-full transition-all duration-300 ${
-              step.done
-                ? 'bg-[var(--lagoon-deep)] shadow-[0_0_6px_rgba(37,99,235,0.4)]'
-                : 'bg-[var(--line)]'
-            }`}
+            className="block h-1 w-6 rounded-full transition-colors"
+            style={{
+              backgroundColor: step.done
+                ? 'var(--conf-green)'
+                : 'var(--border)',
+            }}
           />
         ))}
       </div>
-      <span className="text-[10px] font-semibold tabular-nums text-[var(--sea-ink-soft)]/40">
-        {filled}/{steps.length}
+      <span
+        className="text-xs font-medium tabular-nums"
+        style={{ color: ready ? 'var(--conf-green)' : undefined }}
+      >
+        {ready ? 'Ready' : `${filled}/${steps.length}`}
       </span>
     </div>
   )
 }
 
-// ─── field row ────────────────────────────────────────────────────────────────
-
-function FieldRow({
-  label,
-  htmlFor,
-  aside,
-  children,
-}: {
-  label: string
-  htmlFor: string
-  aside?: React.ReactNode
-  children: React.ReactNode
-}) {
-  return (
-    <div className="group/field relative flex items-center border-b border-[var(--line)] transition-colors focus-within:border-[color-mix(in_oklab,var(--lagoon)_50%,var(--line))]">
-      <span
-        aria-hidden
-        className="absolute left-0 top-0 h-full w-[2px] origin-center scale-y-0 rounded-r bg-[var(--lagoon-deep)] transition-transform duration-200 group-focus-within/field:scale-y-100"
-      />
-
-      <label
-        htmlFor={htmlFor}
-        className="w-[4.5rem] flex-shrink-0 cursor-pointer select-none px-5 py-3.5 text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--sea-ink-soft)]/50 transition-colors group-focus-within/field:text-[var(--lagoon-deep)]"
-      >
-        {label}
-      </label>
-
-      <div className="flex flex-1 items-center py-3.5 pr-4">{children}</div>
-
-      {aside && <div className="pr-4">{aside}</div>}
-    </div>
-  )
-}
-
-// ─── attachment chip ──────────────────────────────────────────────────────────
+// ── attachment chip ──────────────────────────────────────────────────────────
 
 function AttachmentChip({
   file,
@@ -105,6 +129,8 @@ function AttachmentChip({
   onRemove: () => void
 }) {
   const [thumb, setThumb] = useState<string | null>(null)
+  const kind = fileKind(file.type, file.name)
+  const Icon = KIND_ICON[kind]
 
   useEffect(() => {
     if (!file.type.startsWith('image/')) return
@@ -113,45 +139,40 @@ function AttachmentChip({
     return () => URL.revokeObjectURL(url)
   }, [file])
 
-  function Icon() {
-    if (file.type.startsWith('image/')) return <Image className="h-3.5 w-3.5" />
-    if (file.type === 'application/pdf')
-      return <FileText className="h-3.5 w-3.5" />
-    if (
-      file.type.includes('spreadsheet') ||
-      file.type.includes('excel') ||
-      file.type === 'text/csv'
-    )
-      return <Sheet className="h-3.5 w-3.5" />
-    return <File className="h-3.5 w-3.5" />
-  }
-
   return (
-    <div className="group/chip flex items-center gap-2 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--surface)] text-xs shadow-sm transition hover:border-[color-mix(in_oklab,var(--lagoon)_30%,var(--line))] hover:shadow-md">
+    <div
+      className={`file-${kind} flex items-center gap-2 overflow-hidden rounded-lg border border-border bg-card text-xs shadow-sm`}
+      title={`${file.name} — ${KIND_LABEL[kind]}`}
+    >
       {thumb ? (
         <img
           src={thumb}
           alt=""
-          className="h-8 w-8 flex-shrink-0 object-cover"
+          className="h-8 w-8 shrink-0 object-cover"
+          // A corrupt image would otherwise render as a broken-image glyph.
+          onError={() => setThumb(null)}
         />
       ) : (
-        <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center bg-[rgba(59,130,246,0.08)] text-[var(--lagoon-deep)]">
-          <Icon />
+        <span
+          className="flex h-8 w-8 shrink-0 items-center justify-center"
+          style={{
+            backgroundColor:
+              'color-mix(in oklab, var(--file-dot, var(--muted-foreground)) 14%, transparent)',
+            color: 'var(--file-dot, var(--muted-foreground))',
+          }}
+        >
+          <Icon className="h-3.5 w-3.5" />
         </span>
       )}
 
-      <span className="max-w-[120px] truncate font-medium text-[var(--sea-ink)]">
-        {file.name}
-      </span>
-      <span className="text-[var(--sea-ink-soft)]/50">
-        {formatBytes(file.size)}
-      </span>
+      <span className="max-w-[140px] truncate font-medium">{file.name}</span>
+      <span className="text-muted-foreground">{formatBytes(file.size)}</span>
 
       <button
         type="button"
         onClick={onRemove}
         aria-label={`Remove ${file.name}`}
-        className="mr-2 rounded p-0.5 text-[var(--sea-ink-soft)]/35 transition hover:bg-[rgba(0,0,0,0.06)] hover:text-[var(--sea-ink)]"
+        className="mr-2 rounded p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
       >
         <X className="h-3 w-3" />
       </button>
@@ -159,7 +180,7 @@ function AttachmentChip({
   )
 }
 
-// ─── no-changes confirmation ───────────────────────────────────────────────────
+// ── result ───────────────────────────────────────────────────────────────────
 
 function ProcessedConfirmation({
   to,
@@ -174,60 +195,63 @@ function ProcessedConfirmation({
   onNew: () => void
 }) {
   const applied = autoApplied > 0
+  const accent = applied ? 'var(--conf-green)' : 'var(--muted-foreground)'
+  const Icon = applied ? CheckCircle2 : Inbox
+
   return (
-    <div className="island-shell rise-in overflow-hidden rounded-2xl">
-      <div className="h-1 w-full bg-[linear-gradient(90deg,var(--lagoon-deep),var(--lagoon),#93c5fd)]" />
-
-      <div className="px-8 py-14 text-center">
-        <div className="mb-6 flex justify-center">
-          <div className="relative flex h-16 w-16 items-center justify-center">
-            <span className="absolute inset-0 animate-ping rounded-full bg-[rgba(59,130,246,0.15)]" />
-            <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-[rgba(59,130,246,0.10)] ring-1 ring-[rgba(59,130,246,0.22)]">
-              <CheckCircle2 className="h-8 w-8 text-[var(--lagoon-deep)]" />
-            </div>
-          </div>
+    <Card className="text-center">
+      <CardHeader className="items-center">
+        <div
+          className="mx-auto mb-3 flex size-12 items-center justify-center rounded-full"
+          style={{
+            backgroundColor: `color-mix(in oklab, ${accent} 12%, transparent)`,
+            color: accent,
+          }}
+        >
+          <Icon className="size-6" />
         </div>
-
-        <p className="island-kicker mb-2">Email processed</p>
-        <h2 className="display-title m-0 mb-2 text-2xl font-bold text-[var(--sea-ink)]">
+        <CardTitle className="text-2xl">
           {applied
             ? `${autoApplied} change${autoApplied === 1 ? '' : 's'} applied automatically`
             : 'No PO changes detected'}
-        </h2>
-        <p className="mb-8 text-sm text-[var(--sea-ink-soft)]/70">
+        </CardTitle>
+        <CardDescription className="mx-auto max-w-md">
           {applied
             ? 'Every change scored at or above the auto-apply threshold, so nothing needed review. Each one is recorded in the audit log.'
-            : 'The email was saved but no actionable purchase order updates were found.'}
-        </p>
+            : 'The email was saved, but no actionable purchase order updates were found in it.'}
+        </CardDescription>
+      </CardHeader>
 
-        <div className="mx-auto mb-8 max-w-sm divide-y divide-[var(--line)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)] text-left text-sm">
-          <div className="flex gap-3 px-4 py-3">
-            <span className="w-14 flex-shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--sea-ink-soft)]/50">
+      <CardContent>
+        <dl className="mx-auto max-w-sm divide-y divide-border overflow-hidden rounded-lg border border-border text-left text-sm">
+          <div className="flex gap-3 px-4 py-2.5">
+            <dt className="w-16 shrink-0 text-xs font-medium text-muted-foreground">
               To
-            </span>
-            <span className="truncate text-[var(--sea-ink)]">{to}</span>
+            </dt>
+            <dd className="truncate">{to}</dd>
           </div>
-          <div className="flex gap-3 px-4 py-3">
-            <span className="w-14 flex-shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--sea-ink-soft)]/50">
+          <div className="flex gap-3 px-4 py-2.5">
+            <dt className="w-16 shrink-0 text-xs font-medium text-muted-foreground">
               Subject
-            </span>
-            <span className="truncate text-[var(--sea-ink)]">{subject}</span>
+            </dt>
+            <dd className="truncate">{subject}</dd>
           </div>
-        </div>
+        </dl>
+      </CardContent>
 
-        <button
-          onClick={onNew}
-          className="inline-flex items-center gap-2 rounded-full bg-[var(--lagoon-deep)] px-6 py-2.5 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(37,99,235,0.25)] transition hover:-translate-y-0.5 hover:shadow-[0_6px_20px_rgba(37,99,235,0.30)]"
-        >
-          <Plus className="h-4 w-4" />
+      <CardFooter className="justify-center">
+        <Button onClick={onNew}>
+          <Plus className="size-4" />
           Compose another
-        </button>
-      </div>
-    </div>
+        </Button>
+      </CardFooter>
+    </Card>
   )
 }
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// ── page ─────────────────────────────────────────────────────────────────────
+
+type Status = 'idle' | 'sending' | 'processing' | 'done' | 'error'
 
 function bufferToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf)
@@ -238,34 +262,19 @@ function bufferToBase64(buf: ArrayBuffer): string {
   return btoa(binary).replace(/.{76}/g, '$&\r\n')
 }
 
-// ─── page ─────────────────────────────────────────────────────────────────────
-
-type Status = 'idle' | 'sending' | 'processing' | 'done' | 'error'
-
-const STATUS_LABEL: Record<Status, string> = {
-  idle: 'Send',
-  sending: 'Sending…',
-  processing: 'Analysing…',
-  done: 'Done',
-  error: 'Retry',
-}
-
 function ComposePage() {
   const navigate = useNavigate()
 
   const fromId = useId()
   const toId = useId()
-  const ccId = useId()
   const subjectId = useId()
   const bodyId = useId()
 
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
-  const [cc, setCc] = useState('')
-  const [showCc, setShowCc] = useState(false)
   const [subject, setSubject] = useState('')
   const [body, setBody] = useState('')
-  const [attachments, setAttachments] = useState<File[]>([])
+  const [attachments, setAttachments] = useState<Array<File>>([])
   const [dragging, setDragging] = useState(false)
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -277,57 +286,30 @@ function ComposePage() {
     subject.trim() !== '' &&
     body.trim() !== ''
 
-  const completenessSteps = useMemo(
+  const steps = useMemo(
     () => [
-      { label: 'Sender (From)', done: from.trim() !== '' },
-      { label: 'Recipient (To)', done: to.trim() !== '' },
-      { label: 'Subject line', done: subject.trim() !== '' },
-      { label: 'Message body', done: body.trim().length > 20 },
+      { label: 'Sender', done: from.trim() !== '' },
+      { label: 'Recipient', done: to.trim() !== '' },
+      { label: 'Subject', done: subject.trim() !== '' },
+      { label: 'Message', done: body.trim().length > 20 },
     ],
     [from, to, subject, body],
   )
 
-  const wc = useMemo(() => wordCount(body), [body])
+  const words = useMemo(() => wordCount(body), [body])
+  const busy = status === 'sending' || status === 'processing'
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-        if (canSend && status === 'idle') void doSend()
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  })
-
-  const addFiles = useCallback((files: FileList | File[] | null) => {
+  const addFiles = useCallback((files: FileList | Array<File> | null) => {
     if (!files || files.length === 0) return
-    const arr = Array.from(files) // snapshot before input is cleared
+    const incoming = Array.from(files)
     setAttachments((prev) => {
-      const existing = new Set(prev.map((f) => `${f.name}::${f.size}`))
+      const seen = new Set(prev.map((f) => `${f.name}::${f.size}`))
       return [
         ...prev,
-        ...arr.filter((f) => !existing.has(`${f.name}::${f.size}`)),
+        ...incoming.filter((f) => !seen.has(`${f.name}::${f.size}`)),
       ]
     })
   }, [])
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setDragging(true)
-  }, [])
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false)
-  }, [])
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault()
-      setDragging(false)
-      addFiles(e.dataTransfer.files)
-    },
-    [addFiles],
-  )
 
   async function doSend() {
     setStatus('sending')
@@ -335,11 +317,9 @@ function ComposePage() {
     try {
       const date = new Date().toUTCString()
       const msgId = `<${crypto.randomUUID()}@compose.local>`
-
       const headers = [
         `From: ${from}`,
         `To: ${to}`,
-        ...(cc.trim() ? [`Cc: ${cc}`] : []),
         `Subject: ${subject}`,
         `Date: ${date}`,
         `Message-ID: ${msgId}`,
@@ -347,7 +327,6 @@ function ComposePage() {
       ]
 
       let raw: string
-
       if (attachments.length === 0) {
         raw = [
           ...headers,
@@ -363,13 +342,12 @@ function ComposePage() {
           ``,
           body,
         ].join('\r\n')
-        const attachmentParts = await Promise.all(
+        const parts = await Promise.all(
           attachments.map(async (file) => {
             const b64 = bufferToBase64(await file.arrayBuffer())
-            const mime = file.type || 'application/octet-stream'
             return [
               `--${boundary}`,
-              `Content-Type: ${mime}; name="${file.name}"`,
+              `Content-Type: ${file.type || 'application/octet-stream'}; name="${file.name}"`,
               `Content-Transfer-Encoding: base64`,
               `Content-Disposition: attachment; filename="${file.name}"`,
               ``,
@@ -382,7 +360,7 @@ function ComposePage() {
           `Content-Type: multipart/mixed; boundary="${boundary}"`,
           ``,
           textPart,
-          ...attachmentParts,
+          ...parts,
           `--${boundary}--`,
         ].join('\r\n')
       }
@@ -403,17 +381,19 @@ function ComposePage() {
     }
   }
 
-  const handleSubmit = async (e: React.SyntheticEvent) => {
-    e.preventDefault()
-    if (status === 'sending' || status === 'processing' || !canSend) return
-    await doSend()
-  }
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && canSend && !busy) {
+        void doSend()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  })
 
-  const handleReset = () => {
+  function handleReset() {
     setFrom('')
     setTo('')
-    setCc('')
-    setShowCc(false)
     setSubject('')
     setBody('')
     setAttachments([])
@@ -424,7 +404,7 @@ function ComposePage() {
 
   if (status === 'done') {
     return (
-      <main className="page-wrap px-4 pb-16 pt-10">
+      <main className="page-wrap px-4 pt-10 pb-16">
         <div className="mx-auto max-w-[720px]">
           <ProcessedConfirmation
             to={to}
@@ -437,208 +417,191 @@ function ComposePage() {
     )
   }
 
-  const busy = status === 'sending' || status === 'processing'
-
   return (
-    <main className="page-wrap px-4 pb-16 pt-10">
+    <main className="page-wrap px-4 pt-10 pb-16">
       <div className="mx-auto max-w-[720px]">
-        <form onSubmit={handleSubmit} noValidate>
-          <div
-            className={`island-shell rise-in overflow-hidden rounded-2xl outline outline-2 transition-[outline-color] duration-150 ${
-              dragging ? 'outline-[var(--lagoon)]' : 'outline-transparent'
-            }`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (canSend && !busy) void doSend()
+          }}
+          noValidate
+        >
+          <Card
+            className={
+              dragging
+                ? 'outline-2 outline-offset-2 outline-[var(--ring)]'
+                : undefined
+            }
+            onDragOver={(e) => {
+              e.preventDefault()
+              setDragging(true)
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node))
+                setDragging(false)
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDragging(false)
+              addFiles(e.dataTransfer.files)
+            }}
           >
-            {/* ── top bar ─────────────────────────────────────────────────── */}
-            <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
-              <div className="space-y-2">
-                <CompletenessBar steps={completenessSteps} />
-                <h1 className="display-title m-0 text-xl font-bold leading-tight text-[var(--sea-ink)]">
-                  Compose Email
-                </h1>
-              </div>
-
-              <div className="flex flex-col items-end gap-1.5">
-                <button
-                  type="submit"
-                  disabled={!canSend || busy}
-                  className="group flex items-center gap-2 rounded-full bg-[var(--lagoon-deep)] px-5 py-2.5 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(37,99,235,0.25)] transition enabled:hover:-translate-y-0.5 enabled:hover:shadow-[0_6px_20px_rgba(37,99,235,0.32)] disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {busy ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      {STATUS_LABEL[status]}
-                    </>
-                  ) : (
-                    <>
-                      <Send className="h-4 w-4 transition group-enabled:group-hover:translate-x-0.5" />
-                      Send
-                      <ArrowUpRight className="h-3.5 w-3.5 opacity-60" />
-                    </>
-                  )}
-                </button>
-                {busy ? (
-                  <span className="text-[10px] text-[var(--sea-ink-soft)]/35">
-                    {status === 'sending'
-                      ? 'Ingesting email…'
-                      : 'Running LLM pipeline…'}
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-[var(--sea-ink-soft)]/35">
-                    ⌘ ↵ to send
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {errorMsg && (
-              <div className="border-b border-red-200 bg-red-50 px-5 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
-                {errorMsg}
-              </div>
-            )}
-
-            {/* ── address & subject ────────────────────────────────────────── */}
-            <FieldRow label="From" htmlFor={fromId}>
-              <input
-                id={fromId}
-                type="email"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                placeholder="supplier@example.com"
-                required
-                className="w-full bg-transparent text-sm text-[var(--sea-ink)] placeholder:text-[var(--sea-ink-soft)]/35 outline-none"
-              />
-            </FieldRow>
-
-            <FieldRow
-              label="To"
-              htmlFor={toId}
-              aside={
-                <button
-                  type="button"
-                  onClick={() => setShowCc((v) => !v)}
-                  className="text-[10px] font-bold uppercase tracking-[0.15em] text-[var(--sea-ink-soft)]/40 transition hover:text-[var(--lagoon-deep)]"
-                >
-                  {showCc ? 'Hide CC' : '+ CC'}
-                </button>
-              }
-            >
-              <input
-                id={toId}
-                type="email"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-                placeholder="ops@yourcompany.com"
-                required
-                className="w-full bg-transparent text-sm text-[var(--sea-ink)] placeholder:text-[var(--sea-ink-soft)]/35 outline-none"
-              />
-            </FieldRow>
-
-            {showCc && (
-              <FieldRow label="CC" htmlFor={ccId}>
-                <input
-                  id={ccId}
-                  type="email"
-                  value={cc}
-                  onChange={(e) => setCc(e.target.value)}
-                  placeholder="cc@company.com"
-                  className="w-full bg-transparent text-sm text-[var(--sea-ink)] placeholder:text-[var(--sea-ink-soft)]/35 outline-none"
-                />
-              </FieldRow>
-            )}
-
-            <FieldRow label="Subject" htmlFor={subjectId}>
-              <input
-                id={subjectId}
-                type="text"
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                placeholder="e.g. PO-2024-001 – Delivery date update"
-                required
-                className="w-full bg-transparent text-sm text-[var(--sea-ink)] placeholder:text-[var(--sea-ink-soft)]/35 outline-none"
-              />
-            </FieldRow>
-
-            {/* ── body ─────────────────────────────────────────────────────── */}
-            <div className="group/body relative">
-              <label htmlFor={bodyId} className="sr-only">
-                Message body
-              </label>
-              <textarea
-                id={bodyId}
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                placeholder={
-                  'Write your message…\n\nInclude PO numbers, updated quantities, revised delivery dates, or any supplier notes. Attachments such as PDFs, images, and spreadsheets will also be parsed.'
-                }
-                rows={13}
-                required
-                className="w-full resize-none bg-transparent px-5 py-4 text-sm leading-relaxed text-[var(--sea-ink)] placeholder:text-[var(--sea-ink-soft)]/28 outline-none"
-              />
-
-              <div
-                className={`absolute bottom-3 right-4 text-[11px] tabular-nums transition ${
-                  wc > 0 ? 'text-[var(--sea-ink-soft)]/40' : 'text-transparent'
-                }`}
-              >
-                {wc} {wc === 1 ? 'word' : 'words'}
-              </div>
-            </div>
-
-            {/* ── attachments ──────────────────────────────────────────────── */}
-            <div className="border-t border-[var(--line)] px-5 pb-5 pt-4">
-              {attachments.length > 0 && (
-                <div className="mb-3 flex flex-wrap gap-2">
-                  {attachments.map((file, i) => (
-                    <AttachmentChip
-                      key={`${file.name}::${file.size}::${i}`}
-                      file={file}
-                      onRemove={() =>
-                        setAttachments((prev) =>
-                          prev.filter((_, idx) => idx !== i),
-                        )
-                      }
-                    />
-                  ))}
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Compose supplier email</CardTitle>
+                  <CardDescription>
+                    Sent through the same pipeline a real inbound email takes.
+                  </CardDescription>
                 </div>
+                <Readiness steps={steps} />
+              </div>
+            </CardHeader>
+
+            <CardContent className="space-y-4">
+              {errorMsg && (
+                <p
+                  className="rounded-lg border px-3 py-2 text-sm"
+                  style={{
+                    color: 'var(--destructive)',
+                    borderColor:
+                      'color-mix(in oklab, var(--destructive) 35%, transparent)',
+                    backgroundColor:
+                      'color-mix(in oklab, var(--destructive) 8%, transparent)',
+                  }}
+                >
+                  {errorMsg}
+                </p>
               )}
 
-              <label
-                htmlFor="compose-file-input"
-                className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl border-2 border-dashed py-3 text-sm font-medium transition ${
-                  dragging
-                    ? 'border-[var(--lagoon)] bg-[rgba(59,130,246,0.08)] text-[var(--lagoon-deep)]'
-                    : 'border-[var(--line)] text-[var(--sea-ink-soft)]/55 hover:border-[color-mix(in_oklab,var(--lagoon)_38%,var(--line))] hover:bg-[rgba(59,130,246,0.05)] hover:text-[var(--sea-ink-soft)]'
-                }`}
-              >
-                <Paperclip className="h-4 w-4" />
-                {dragging ? 'Drop to attach' : 'Attach files'}
-                {!dragging && (
-                  <span className="text-xs font-normal opacity-50">
-                    · drag &amp; drop or click
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor={fromId}>From</Label>
+                  <Input
+                    id={fromId}
+                    type="email"
+                    value={from}
+                    onChange={(e) => setFrom(e.target.value)}
+                    placeholder="big@supplier.com"
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={toId}>To</Label>
+                  <Input
+                    id={toId}
+                    type="email"
+                    value={to}
+                    onChange={(e) => setTo(e.target.value)}
+                    placeholder="ops@acme.test"
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor={subjectId}>Subject</Label>
+                <Input
+                  id={subjectId}
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  placeholder="PO-12 delivery confirmation"
+                  autoComplete="off"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-baseline justify-between">
+                  <Label htmlFor={bodyId}>Message</Label>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {words} {words === 1 ? 'word' : 'words'}
                   </span>
+                </div>
+                <Textarea
+                  id={bodyId}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  rows={10}
+                  placeholder={
+                    'Include PO references, revised quantities or delivery dates.\n\ne.g. On SKU13 we can only ship 12000 units this quarter rather than the full 15000.'
+                  }
+                  className="resize-none"
+                />
+              </div>
+
+              <Separator />
+
+              <div className="space-y-3">
+                {attachments.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {attachments.map((file, i) => (
+                      <AttachmentChip
+                        key={`${file.name}::${file.size}::${i}`}
+                        file={file}
+                        onRemove={() =>
+                          setAttachments((prev) =>
+                            prev.filter((_, idx) => idx !== i),
+                          )
+                        }
+                      />
+                    ))}
+                  </div>
                 )}
-              </label>
 
-              <p className="mt-2 text-center text-[11px] text-[var(--sea-ink-soft)]/35">
-                PDF, images, spreadsheets, Word docs — any PO-related documents
-              </p>
+                <label
+                  htmlFor="compose-file-input"
+                  className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed py-3 text-sm font-medium transition ${
+                    dragging
+                      ? 'border-[var(--ring)] bg-accent text-accent-foreground'
+                      : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  <Paperclip className="size-4" />
+                  {dragging ? 'Drop to attach' : 'Attach files'}
+                </label>
+                <p className="text-center text-xs text-muted-foreground">
+                  PDFs and spreadsheets are text-extracted; images go to the
+                  model as vision input.
+                </p>
 
-              <input
-                id="compose-file-input"
-                type="file"
-                multiple
-                className="sr-only"
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? [])
-                  e.target.value = ''
-                  if (files.length) addFiles(files)
-                }}
-              />
-            </div>
-          </div>
+                <input
+                  id="compose-file-input"
+                  type="file"
+                  multiple
+                  className="sr-only"
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files ?? [])
+                    e.target.value = ''
+                    if (files.length) addFiles(files)
+                  }}
+                />
+              </div>
+            </CardContent>
+
+            <CardFooter className="justify-between gap-3">
+              <span className="text-xs text-muted-foreground">
+                {busy
+                  ? status === 'sending'
+                    ? 'Ingesting email…'
+                    : 'Running the extraction pipeline…'
+                  : '⌘ ↵ to send'}
+              </span>
+              <Button type="submit" disabled={!canSend || busy}>
+                {busy ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    {status === 'sending' ? 'Sending' : 'Analysing'}
+                  </>
+                ) : (
+                  <>
+                    <Send className="size-4" />
+                    Send
+                  </>
+                )}
+              </Button>
+            </CardFooter>
+          </Card>
         </form>
       </div>
     </main>

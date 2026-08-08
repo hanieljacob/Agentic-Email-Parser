@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @plugin "@tailwindcss/typography";
@@ -65,45 +65,25 @@
 
   --sea-ink: #0f172a;
   --sea-ink-soft: #64748b;
-  --lagoon: #3b82f6;
   --lagoon-deep: #2563eb;
   --palm: #1d4ed8;
-  --sand: #f1f5f9;
-  --foam: #f8fafc;
-  --surface: rgba(255, 255, 255, 0.88);
   --surface-strong: rgba(255, 255, 255, 0.96);
   --line: rgba(15, 23, 42, 0.1);
-  --inset-glint: rgba(255, 255, 255, 0.92);
-  --kicker: #2563eb;
-  --bg-base: #e2e8f0;
   --header-bg: rgba(248, 250, 252, 0.9);
   --chip-bg: rgba(255, 255, 255, 0.9);
   --chip-line: rgba(37, 99, 235, 0.18);
-  --link-bg-hover: rgba(255, 255, 255, 0.95);
-  --hero-a: rgba(59, 130, 246, 0.18);
-  --hero-b: rgba(37, 99, 235, 0.1);
 }
 
 :root[data-theme='dark'] {
   --sea-ink: #f1f5f9;
   --sea-ink-soft: #94a3b8;
-  --lagoon: #60a5fa;
   --lagoon-deep: #93c5fd;
   --palm: #bfdbfe;
-  --sand: #0f172a;
-  --foam: #0d1424;
-  --surface: rgba(15, 23, 42, 0.82);
   --surface-strong: rgba(10, 17, 33, 0.94);
   --line: rgba(148, 163, 184, 0.16);
-  --inset-glint: rgba(148, 163, 184, 0.1);
-  --kicker: #93c5fd;
-  --bg-base: #07101f;
   --header-bg: rgba(7, 16, 31, 0.9);
   --chip-bg: rgba(15, 23, 42, 0.92);
   --chip-line: rgba(96, 165, 250, 0.22);
-  --link-bg-hover: rgba(20, 32, 52, 0.88);
-  --hero-a: rgba(59, 130, 246, 0.12);
-  --hero-b: rgba(37, 99, 235, 0.08);
 }
 
 /* The theme script always stamps `light` or `dark` on <html>, including in
@@ -170,6 +150,30 @@
   --conf-ink: #f87171;
 }
 
+/* Attachment kinds are categorical too. Three validated slots cover the
+   formats the extractor actually reads differently — images go to the model
+   as vision input, PDFs and spreadsheets get text-extracted — and anything
+   else stays neutral, which is the honest signal that it will be skipped.
+   Every chip shows its filename and icon, so colour is never alone. */
+.file-image {
+  --file-dot: #2a78d6;
+}
+.file-pdf {
+  --file-dot: #eb6834;
+}
+.file-sheet {
+  --file-dot: #1baf7a;
+}
+.dark .file-image {
+  --file-dot: #3987e5;
+}
+.dark .file-pdf {
+  --file-dot: #d95926;
+}
+.dark .file-sheet {
+  --file-dot: #199e70;
+}
+
 /* Field identity is categorical, so it takes validated categorical slots
    rather than status colours — a field type must never read as a severity.
    Shown as a dot beside the field name, never as colour alone. */
@@ -190,23 +194,13 @@
   :root:not([data-theme='light']) {
     --sea-ink: #f1f5f9;
     --sea-ink-soft: #94a3b8;
-    --lagoon: #60a5fa;
     --lagoon-deep: #93c5fd;
     --palm: #bfdbfe;
-    --sand: #0f172a;
-    --foam: #0d1424;
-    --surface: rgba(15, 23, 42, 0.82);
     --surface-strong: rgba(10, 17, 33, 0.94);
     --line: rgba(148, 163, 184, 0.16);
-    --inset-glint: rgba(148, 163, 184, 0.1);
-    --kicker: #93c5fd;
-    --bg-base: #07101f;
     --header-bg: rgba(7, 16, 31, 0.9);
     --chip-bg: rgba(15, 23, 42, 0.92);
     --chip-line: rgba(96, 165, 250, 0.22);
-    --link-bg-hover: rgba(20, 32, 52, 0.88);
-    --hero-a: rgba(59, 130, 246, 0.12);
-    --hero-b: rgba(37, 99, 235, 0.08);
   }
 }
 
@@ -220,36 +214,17 @@ body,
   min-height: 100%;
 }
 
+/* Flat surface on purpose. The page is a work queue, so the background stays
+   out of the way and the only colour that carries meaning is confidence,
+   field identity and attachment kind. */
 body {
   margin: 0;
-  color: var(--sea-ink);
+  color: var(--foreground);
   font-family: var(--font-sans);
-  background:
-    radial-gradient(900px 500px at -5% -8%, var(--hero-a), transparent 55%),
-    radial-gradient(800px 500px at 110% -10%, var(--hero-b), transparent 60%),
-    linear-gradient(
-      180deg,
-      var(--sand) 0%,
-      var(--foam) 60%,
-      var(--bg-base) 100%
-    );
+  background: var(--background);
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: -1;
-  opacity: 0.08;
-  background-image:
-    linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
-  background-size: 32px 32px;
-  mask-image: radial-gradient(circle at 50% 25%, black, transparent 72%);
 }
 
 a {
@@ -285,48 +260,13 @@ pre code {
   margin-inline: auto;
 }
 
-.display-title {
-  font-family: 'Fraunces', Georgia, serif;
-}
-
-.island-shell {
-  border: 1px solid var(--line);
-  background: var(--surface-strong);
-  box-shadow:
-    0 1px 0 var(--inset-glint) inset,
-    0 4px 6px rgba(0, 0, 0, 0.04),
-    0 12px 24px rgba(0, 0, 0, 0.06);
-}
-
-.feature-card {
-  background: var(--surface);
-  box-shadow:
-    0 1px 0 var(--inset-glint) inset,
-    0 2px 4px rgba(0, 0, 0, 0.04),
-    0 8px 16px rgba(0, 0, 0, 0.05);
-}
-
-.feature-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(37, 99, 235, 0.3);
-}
-
 button,
-.island-shell,
 a {
   transition:
     background-color 150ms ease,
     color 150ms ease,
     border-color 150ms ease,
     transform 150ms ease;
-}
-
-.island-kicker {
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  font-weight: 700;
-  font-size: 0.69rem;
-  color: var(--kicker);
 }
 
 .nav-link {
@@ -369,19 +309,4 @@ a {
 .site-footer {
   border-top: 1px solid var(--line);
   background: var(--header-bg);
-}
-
-.rise-in {
-  animation: rise-in 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-@keyframes rise-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
