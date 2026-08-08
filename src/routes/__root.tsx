@@ -3,6 +3,7 @@ import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 import Footer from '../components/Footer'
 import Header from '../components/Header'
+import { Toaster } from '../components/ui/sonner'
 
 import appCss from '../styles.css?url'
 
@@ -53,6 +54,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <Header />
         {children}
         <Footer />
+        {/* Top-right keeps toasts clear of the review dialog's footer
+            actions, which sit bottom-right. */}
+        <Toaster position="top-right" />
         <TanStackDevtools
           config={{
             position: 'bottom-right',

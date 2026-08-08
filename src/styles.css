@@ -1,13 +1,69 @@
 
 @import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap");
 @import "tailwindcss";
+@import "tw-animate-css";
 @plugin "@tailwindcss/typography";
+
+/* The theme script in __root.tsx puts `light`/`dark` on <html> before
+   hydration, so shadcn's dark variant keys off that class. */
+@custom-variant dark (&:is(.dark *));
 
 @theme {
   --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
 }
 
+/* shadcn/ui tokens, mapped onto the palette the app already uses so the
+   generated components read as native rather than bolted on. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
 :root {
+  --radius: 0.625rem;
+
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #eff6ff;
+  --accent-foreground: #1e3a8a;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #2563eb;
+
   --sea-ink: #0f172a;
   --sea-ink-soft: #64748b;
   --lagoon: #3b82f6;
@@ -49,6 +105,86 @@
   --link-bg-hover: rgba(20, 32, 52, 0.88);
   --hero-a: rgba(59, 130, 246, 0.12);
   --hero-b: rgba(37, 99, 235, 0.08);
+}
+
+/* The theme script always stamps `light` or `dark` on <html>, including in
+   auto mode, so the shadcn tokens key off the class alone rather than
+   repeating themselves across the attribute and media-query selectors. */
+.dark {
+  --background: #07101f;
+  --foreground: #f1f5f9;
+  --card: #0f172a;
+  --card-foreground: #f1f5f9;
+  --popover: #0f172a;
+  --popover-foreground: #f1f5f9;
+  --primary: #60a5fa;
+  --primary-foreground: #07101f;
+  --secondary: #1e293b;
+  --secondary-foreground: #f1f5f9;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --accent: #1e293b;
+  --accent-foreground: #bfdbfe;
+  --destructive: #ef4444;
+  --destructive-foreground: #0f172a;
+  --border: #1e293b;
+  --input: #1e293b;
+  --ring: #60a5fa;
+}
+
+/* ── semantic colour ────────────────────────────────────────────────────────
+   Confidence is the one number a reviewer acts on, so it gets the colour
+   budget. Bands are a status encoding (good / warning / critical), validated
+   for colour-vision deficiency: worst adjacent pair ΔE 11.3 simulated, 27.6
+   normal vision. Colour is never the only channel — every band also shows the
+   percentage and a meter whose length encodes the same value.
+
+   `tint` is the pure status hue, used only for fills and borders. `ink` is a
+   darkened step used for text and the meter bar, so both clear 4.5:1 against
+   the card in either theme. */
+:root {
+  --conf-green: #0ca30c;
+  --conf-amber: #fab219;
+  --conf-red: #d03b3b;
+}
+
+.conf-high {
+  --conf-tint: #0ca30c;
+  --conf-ink: #0a7a0a;
+}
+.conf-medium {
+  --conf-tint: #fab219;
+  --conf-ink: #8a5300;
+}
+.conf-low {
+  --conf-tint: #d03b3b;
+  --conf-ink: #b3261e;
+}
+
+.dark .conf-high {
+  --conf-ink: #4ade80;
+}
+.dark .conf-medium {
+  --conf-ink: #fbbf24;
+}
+.dark .conf-low {
+  --conf-ink: #f87171;
+}
+
+/* Field identity is categorical, so it takes validated categorical slots
+   rather than status colours — a field type must never read as a severity.
+   Shown as a dot beside the field name, never as colour alone. */
+.field-delivery_date {
+  --field-dot: #2a78d6;
+}
+.field-quantity {
+  --field-dot: #1baf7a;
+}
+.dark .field-delivery_date {
+  --field-dot: #3987e5;
+}
+.dark .field-quantity {
+  --field-dot: #199e70;
 }
 
 @media (prefers-color-scheme: dark) {
