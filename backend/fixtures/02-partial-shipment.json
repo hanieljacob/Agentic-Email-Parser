@@ -1,0 +1,20 @@
+{
+  "po_updates": [
+    {
+      "po_ref": "PO-12",
+      "source": "body",
+      "evidence": "Small problem on PO-12.",
+      "confidence": 1.0,
+      "line_updates": [
+        {
+          "sku_or_code": "SKU13",
+          "field": "quantity",
+          "new_value": "12000",
+          "evidence": "On SKU13 we can only ship 12000 units this quarter rather than the full 15000",
+          "confidence": 1.0
+        }
+      ]
+    }
+  ],
+  "unmatched_mentions": []
+}

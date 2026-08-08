@@ -1,0 +1,20 @@
+{
+  "po_updates": [
+    {
+      "po_ref": "PO-35",
+      "source": "body",
+      "evidence": "Quick update on PO-35",
+      "confidence": 1.0,
+      "line_updates": [
+        {
+          "sku_or_code": "SKU-1",
+          "field": "delivery_date",
+          "new_value": "2026-03-02",
+          "evidence": "we expect SKU-1 to ship sometime in early March",
+          "confidence": 0.8
+        }
+      ]
+    }
+  ],
+  "unmatched_mentions": []
+}

@@ -1,218 +1,160 @@
 # Agentic Email Parser
 
-Automatically ingests supplier emails, extracts purchase order (PO) updates using an LLM, matches them to canonical DB records, and either auto-applies high-confidence changes or routes them to a human review queue.
+**Which supplier emails changed a purchase order — and which of those changes is safe to apply without a human?**
+
+Suppliers send purchase order updates as prose: a revised delivery date here, a partial shipment there, written in their own product codes. This service ingests those emails, uses an LLM to extract the purchase order updates, matches them back to canonical database rows, and writes back only the changes it can justify — routing everything else to a human review queue. Every write to canonical data passes through a staged proposal, an optimistic lock, and an immutable audit entry.
+
+![Review queue](docs/review-queue.png)
 
 ---
 
-## How it works
+## What it is
+
+A FastAPI backend and a React front end over PostgreSQL.
+
+| Stage | Where | What it does |
+|---|---|---|
+| **Ingest** | `backend/ingest.py` | Parses RFC 822, stores the email and its attachments. Idempotent on a SHA-256 of the raw bytes. |
+| **Extract** | `backend/extract.py` | Builds a prompt from the supplier's open POs, their product-code aliases and their past corrections; calls the model; validates the response against a Pydantic schema. |
+| **Match** | `backend/match.py` | Resolves the quoted PO reference and product code to real rows, scores how cleanly each resolved, and stages one `proposed_changes` row per field change. |
+| **Route** | `backend/match.py` | At or above the confidence threshold the change is applied immediately. Below it, a human decides. |
+| **Writeback** | `backend/writeback.py` | Applies an approved change under an optimistic lock, writing an audit row first. |
+| **Review** | `/review` | The queue, with the proposed change and the original email side by side. |
 
 ```
-Supplier email
+supplier email
       │
       ▼
-┌─────────────┐     RFC 822      ┌──────────────────┐
-│  Ingest     │ ───────────────► │  Extract (LLM)   │
-│  (Python /  │                  │  OpenRouter API  │
-│  FastAPI)   │                  └────────┬─────────┘
-└─────────────┘                           │ structured JSON
-                                          ▼
-                                 ┌──────────────────┐
-                                 │  Match           │
-                                 │  PO ref + SKU →  │
-                                 │  DB records      │
-                                 └────────┬─────────┘
-                              confidence ≥ 0.95?
-                                 ┌────────┴─────────┐
-                                Yes                  No
-                                 ▼                   ▼
-                          Auto-apply           Review queue
-                          (writeback)          /review UI
+┌──────────┐   ┌──────────┐   ┌──────────┐
+│  ingest  │──▶│ extract  │──▶│  match   │
+│          │   │  (LLM)   │   │ PO + SKU │
+└──────────┘   └──────────┘   └────┬─────┘
+                                   │
+                    combined_confidence ≥ 0.95 ?
+                       ┌───────────┴───────────┐
+                      yes                      no
+                       ▼                       ▼
+                 ┌───────────┐          ┌─────────────┐
+                 │ writeback │          │ review queue│
+                 │ + audit   │◀─approve─│   /review   │
+                 └───────────┘          └─────────────┘
 ```
 
-### Pipeline stages
+All of it is one FastAPI application on one port, including the retry worker.
 
-| Stage | Entry point | What it does |
-|---|---|---|
-| **Ingest** | `backend/ingest.py` (FastAPI, port 8000) | Parses RFC 822 email, saves to DB, extracts attachments, fires pipeline trigger |
-| **Extract** | `backend/extract.ts` (HTTP server, port 8001) | Builds LLM context from supplier history + corrections, calls OpenRouter, validates JSON output |
-| **Match** | `backend/match.ts` | Resolves PO ref and SKU to canonical DB rows, scores confidence, inserts `proposed_changes` |
-| **Review** | `/review` (TanStack Start UI) | Human approves or rejects pending changes with a reason |
-| **Writeback** | `src/writeback/apply.ts` | Applies approved change to `purchase_order_line` with optimistic locking and audit log |
+---
+
+## The demo path
+
+One command produces a populated review queue. No API key, no network call.
+
+```bash
+pnpm setup      # createdb, venv, pip install, migrations
+pnpm seed       # canonical data + fixture emails through the real pipeline
+pnpm api        # backend  → :8000
+pnpm dev        # frontend → :3000
+```
+
+`pnpm seed` prints exactly this, every time, on every machine:
+
+```
+  ✓ 01-delivery-confirmation.eml  proposed=1  auto-applied=1  pending=0
+  ✓ 02-partial-shipment.eml       proposed=1  auto-applied=0  pending=1
+  ✓ 03-provisional-schedule.eml   proposed=1  auto-applied=0  pending=1
+  3 changes proposed, 1 auto-applied, 2 awaiting review.
+```
+
+### Follow it through with real values
+
+**`01-delivery-confirmation.eml`** — Big Supplier writes *"Delivery for SKU-2 is now confirmed for 3 February 2026."*
+
+The model returns `SKU-2 / delivery_date / 2026-02-03` at confidence `1.0`. `PO-12` matches a purchase order reference exactly (`1.0`); `SKU-2` matches a product SKU on that order exactly (`1.0`). Combined: `1.0 × 1.0 × 1.0 = 1.00`, at or above the `0.95` threshold, so it is **applied without a human**. Check it:
+
+```sql
+SELECT prior_value, new_value, applied_by FROM audit_log;
+--  2026-01-15 | 2026-02-03 | auto
+```
+
+**`02-partial-shipment.eml`** — the same supplier writes *"On SKU13 we can only ship 12000 units this quarter rather than the full 15000."*
+
+`SKU13` is not one of our SKUs. It is this supplier's own code for `SKU-1-3`, recorded in `supplier_product`, so it resolves — but through an alias, which scores `0.9` rather than `1.0`. Combined: `1.0 × 1.0 × 0.9 = 0.90`. Below threshold, so it lands in the queue at **90%**. Open it at http://localhost:3000/review and the evidence sentence is quoted beside the original email.
+
+**`03-provisional-schedule.eml`** — Small Supplier writes *"we expect SKU-1 to ship sometime in early March."*
+
+Nothing is misresolved here: `PO-35` and `SKU-1` both match exactly. The uncertainty is in the reading — the prompt tells the model to score hedged wording at `0.8`. Combined: `0.8 × 1.0 × 1.0 = 0.80`. It lands in the queue at **80%**.
+
+So the queue holds two changes for two different reasons: one the system matched loosely, one the model read loosely. That distinction is why the score is a product of two numbers rather than one.
+
+Approve the 90% change and the value moves; reject it and you must pick a reason, which is aggregated per supplier at `/monitoring`.
+
+### Running it against a real model
+
+The demo runs on a deterministic offline stub. To use OpenRouter instead:
+
+```bash
+LLM_PROVIDER=openrouter OPENROUTER_API_KEY=sk-... pnpm api
+```
+
+Then send an email from the compose page at http://localhost:3000. Live extraction is fully supported; it is just not on the demo path, so a reviewer never needs a key and a demo never depends on a network round trip.
+
+---
+
+## Design decisions
+
+**Why a confidence threshold at all.** Extraction is probabilistic and the database is not. Without a threshold the only two options are applying everything the model says — which corrupts canonical data the first time it misreads a date — or reviewing everything, which is just manual data entry with extra steps. The threshold converts a continuous belief into a binary decision and makes the trade-off explicit and tunable.
+
+**Why the score is a product of two numbers.** `combined_confidence = extraction_confidence × match_confidence`. These fail independently: the model can read a sentence perfectly and still have its SKU resolved through a fuzzy alias, or resolve everything exactly while guessing at "early March". Multiplying means either kind of doubt pulls the change out of the automatic path. With the prompt emitting only `1.0`, `0.8` or `0.6`, a `0.95` threshold means auto-apply requires an unambiguous statement, an exact PO reference *and* an exact SKU — any inference or alias hop routes to a human.
+
+**Why low confidence goes to a person rather than being dropped or applied.** A missed delivery-date change is a stockout; a wrongly applied one is a phantom commitment nobody notices until the goods do not arrive. Both failures are expensive and neither is detectable downstream, because canonical data carries no signal about how it got there. A human sees the proposed change beside the sentence that produced it and decides in a few seconds. Rejections are recorded with a structured reason, so the failure modes aggregate into something a developer can act on.
+
+**Why writeback uses optimistic locking.** A proposal is created at one moment and applied at another — possibly minutes later, possibly after a second email about the same line. `proposed_changes.target_record_version` records the canonical row's version at extraction time; the trigger on the canonical table increments it on every write. If the versions no longer agree, the row moved on since a human looked at it, the proposal is marked `superseded`, and **nothing is written**. Without it, approving two stale proposals in the wrong order silently produces last-write-wins. Both rows are taken `FOR UPDATE` so concurrent applies queue rather than race.
+
+**What the audit log records.** One immutable row per canonical write: the table, the row, the field, the value before, the value after, who applied it (`auto` for threshold applies, otherwise the reviewer), and the `proposed_change_id` that authorised it. That last column is what makes it useful — from any changed value you can reach the proposal, the extraction run that produced it, the raw model output, and the original email. `UPDATE` and `DELETE` triggers raise, so history cannot be rewritten; reversing a change means running a new proposal through the same path.
 
 ---
 
 ## Setup
 
-### Prerequisites
-
-- Node.js 20+, pnpm
-- Python 3.12+
-- PostgreSQL (local or remote)
-- An [OpenRouter](https://openrouter.ai) API key
-
-### First-time setup
+**Requires** PostgreSQL 15+, Python 3.12+, Node 20+ and pnpm.
 
 ```bash
-# 1. Install JS dependencies
 pnpm install
-
-# 2. Install Python dependencies
-pip install -r backend/requirements.txt
-
-# 3. Copy and fill in environment variables
-cp .env.example .env   # then edit .env
-
-# 4. Create the database, run all migrations, install Python deps
-pnpm setup
-
-# 5. Seed canonical tables from backend/data/db.xlsx
-pnpm seed
+cp .env.example .env          # defaults work as-is
+createdb email_parser
+pnpm migrate                  # applies migrations/*.sql in order
+pnpm seed                     # canonical data + fixture emails
 ```
 
-### Environment variables
+`pnpm setup` does all of the above in one step, including creating the Python virtualenv.
 
-| Variable | Default | Description |
-|---|---|---|
-| `DATABASE_URL` | — | PostgreSQL connection string |
-| `OPENROUTER_API_KEY` | — | OpenRouter API key |
-| `MODEL_NAME` | `anthropic/claude-sonnet-4` | LLM model used for extraction |
-| `EXTRACT_SERVER_URL` | `http://localhost:8001` | URL of the extract server (used by ingest + worker) |
-| `AUTO_APPLY_THRESHOLD` | `0.95` | Combined confidence threshold for auto-apply; set to `0` to disable |
-| `ATTACHMENTS_DIR` | `./attachments` | Directory where email attachments are stored |
-| `API_PORT` | `8002` | Port for the REST writeback API |
-| `WORKER_INTERVAL_SECONDS` | `60` | How often the retry worker polls for stuck emails |
-| `WORKER_GRACE_SECONDS` | `120` | Minimum age before a stuck email is retried |
-| `WORKER_MAX_RETRIES` | `3` | Maximum pipeline retry attempts per email |
+| Command | What it does |
+|---|---|
+| `pnpm api` | The backend — FastAPI, uvicorn, port 8000 |
+| `pnpm dev` | The frontend — Vite, port 3000 |
+| `pnpm migrate` | Applies every SQL migration in order |
+| `pnpm seed` | Resets to the demo state (destructive) |
+| `pnpm build` | Production build |
+| `backend/.venv/bin/python -m pytest` | Backend test suite |
 
----
+Every environment variable is documented in `.env.example`.
 
-## Running
-
-Start each service in a separate terminal:
+### Tests
 
 ```bash
-pnpm ingest          # Python ingest server  →  http://localhost:8000
-pnpm extract-server  # LLM extraction server →  http://localhost:8001
-pnpm dev             # Frontend (TanStack Start) → http://localhost:3000
+backend/.venv/bin/python -m pytest
 ```
 
-Optional:
-```bash
-pnpm worker          # Retry worker — re-triggers stuck emails automatically
-pnpm api             # REST writeback API → http://localhost:8002
-```
+96 tests against a real PostgreSQL database, created and migrated per run. They cover extraction output validation and the invalid-output path, confidence scoring, the auto-apply versus review routing decision, writeback under concurrent update, the HTTP surface, and the demo path itself. No test asserts anything about the model — every response comes from the offline stub, and the suite pins the stub so a run can never make a network call.
 
 ---
 
-## Submitting an email
+## Known limitations
 
-**Via the UI** — open `http://localhost:3000`, fill in the compose form and click Send.
-
-**Via curl** — POST a raw `.eml` file directly to the ingest server:
-```bash
-curl -X POST http://localhost:8000/emails --data-binary @email.eml
-```
-
----
-
-## Features
-
-### Attachment support
-
-The extraction step reads text from all common attachment types:
-
-| Format | Extraction method |
-|---|---|
-| Images (`image/*`) | Passed as base64 vision inputs to the LLM |
-| PDF | Text layer extracted via `pdf-parse`; scanned PDFs get a reviewer note |
-| Word (`.docx`) | Raw text via `mammoth` |
-| Excel (`.xlsx`, `.xls`, `.csv`) | Each sheet converted to CSV via `xlsx` |
-| Plain text | Read directly |
-
-### Confidence-based auto-apply
-
-Each proposed change gets a `combined_confidence` score (extraction confidence × match confidence). Changes above `AUTO_APPLY_THRESHOLD` (default 0.95) are applied immediately without human review. All changes — auto-applied or manual — are recorded in the immutable `audit_log`.
-
-### Feedback loop
-
-Three layers of learning that improve extraction accuracy over time:
-
-1. **Rejection reasons** — reviewers select a structured reason when rejecting a change (`wrong_sku`, `wrong_date_format`, etc.); visible per supplier on the Monitoring page.
-2. **Supplier notes** — set `supplier.llm_notes` to inject free-text guidance into the extraction prompt for that supplier.
-3. **Few-shot corrections** — approving a SKU correction via the API writes to `supplier_corrections`; the next extraction for that supplier includes up to 5 recent corrections as examples.
-
-### Retry worker
-
-`pnpm worker` polls for emails stuck in `ingested` or `failed` status and re-triggers the pipeline, up to `WORKER_MAX_RETRIES` attempts.
-
-### Monitoring
-
-`http://localhost:3000/monitoring` shows:
-- Pipeline health (email counts by status, green/yellow/red indicator)
-- Proposed changes summary (pending, auto-applied, rejected, average confidence)
-- Stuck emails table
-- Rejection patterns per supplier with a prompt to set `llm_notes` when patterns emerge
-
----
-
-## Database schema
-
-### Canonical tables (seeded from `backend/data/db.xlsx`)
-
-| Table | Key columns |
-|---|---|
-| `product` | `sku`, `title` |
-| `supplier` | `name`, `email`, `llm_notes` |
-| `purchase_order` | `reference_num`, `supplier_id`, `delivery_date` |
-| `purchase_order_line` | `purchase_order_id`, `product_id`, `quantity`, `delivery_date`, `version` |
-| `supplier_product` | `(supplier_id, product_id)`, `supplier_sku`, `price_per_unit` |
-
-### Pipeline tables
-
-| Table | Purpose |
-|---|---|
-| `emails` | Ingested emails with status (`ingested` → `extracted` → `matched`/`failed`) |
-| `email_attachments` | Attachment metadata; files stored at `ATTACHMENTS_DIR/<sha256><ext>` |
-| `extraction_runs` | LLM output per email; links emails → proposed_changes |
-| `proposed_changes` | One row per field change; status: `pending`, `approved`, `applied`, `rejected`, `superseded` |
-| `audit_log` | Immutable write history (insert-only, enforced by trigger) |
-| `supplier_email_aliases` | Maps additional sender addresses to suppliers |
-| `supplier_corrections` | Few-shot SKU correction examples injected into future prompts |
-
-### Views (migration 0013)
-
-| View | Purpose |
-|---|---|
-| `pipeline_status` | Email counts by status — used by Monitoring page |
-| `rejection_patterns` | Per-supplier rejection counts by reason — used by Monitoring page |
-
----
-
-## REST API
-
-Start with `pnpm api` (port 8002).
-
-| Method | Path | Body | Action |
-|---|---|---|---|
-| `POST` | `/proposed-changes/:id/apply` | `{ applied_by?: string }` | Applies change to `purchase_order_line` (version-safe; marks superseded on conflict) |
-| `POST` | `/proposed-changes/:id/correct-sku` | `{ correct_product_id: string }` | Records supplier SKU mapping, re-points proposed change at correct line |
-| `POST` | `/emails/:id/assign-supplier` | `{ supplier_id: string, retrigger?: boolean }` | Links sender address to supplier; optionally re-runs extract + match |
-| `GET` | `/health` | — | Health check |
-
----
-
-## Scripts
-
-```bash
-pnpm dev             # Start frontend dev server
-pnpm ingest          # Start Python ingest server (port 8000)
-pnpm extract-server  # Start LLM extract server (port 8001)
-pnpm worker          # Start retry worker
-pnpm api             # Start REST API server (port 8002)
-pnpm migrate         # Run all SQL migrations in order
-pnpm seed            # Seed canonical tables from backend/data/db.xlsx
-pnpm setup           # First-time: create DB + migrate + pip install
-pnpm build           # Production build
-pnpm test            # Run Vitest test suite
-pnpm check           # Prettier + ESLint fix
-```
+- **No auth.** Every endpoint is open and `reviewer_id` is whatever the client sends. Fine for a single-operator tool, not for multi-tenant use.
+- **`normalize_ref` collapses zero runs anywhere, not just leading ones.** `PO-10`, `PO-010`, `PO-100` and `PO-1000` all normalise to `10`, and `PO-12` collides with `PO-102`. Contained rather than fixed: a fuzzy PO hit caps combined confidence at 0.9, so a mis-resolved reference always lands in review instead of being written back. Not reachable with the current dataset.
+- **Model output that is not JSON at all is recorded as a successful, empty extraction.** `{}` is valid against the schema because every top-level field has a default, so a refusal reads as "no PO updates found" rather than as an error, and is never retried. Schema *violations* are handled properly — stored as a failed run with the message.
+- **`AUTO_APPLY_THRESHOLD=0` does not disable auto-apply.** The comparison is `>=`, so `0` matches everything and empties the review queue. Use a value above `1.0` to send everything to a human.
+- **Attachment parity is approximate.** `openpyxl` cannot read legacy `.xls`, and `pypdf` will not extract text identically to the previous JavaScript implementation on complex layouts. Neither is on the demo path.
+- **The retry worker is single-process.** It polls inside the API process with no leader election, so running two API instances would double-process stuck emails.
+- **Only two fields are writable** — `delivery_date` and `quantity` on `purchase_order_line`. The whitelist in `backend/writeback.py` is deliberate; widening it means deciding how each new column is cast and validated.
+- **`evidence_metadata`, `reviewer_id` and `review_notes` are modelled but barely used.** Page and character offsets would let the UI highlight evidence inside the email rather than quoting it separately.

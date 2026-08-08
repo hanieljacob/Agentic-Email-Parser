@@ -1,0 +1,18 @@
+From: Big Supplier <big@supplier.com>
+To: ops@acme.test
+Subject: PO-12 partial shipment this quarter
+Date: Tue, 13 Jan 2026 11:02:00 +0000
+Message-ID: <fixture-02-partial-shipment@supplier.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Morning,
+
+Small problem on PO-12. On SKU13 we can only ship 12000 units this quarter
+rather than the full 15000 - the remainder will follow on a separate order
+once the line frees up.
+
+Let me know if that causes you a problem downstream.
+
+Regards,
+Big Supplier

@@ -1,0 +1,20 @@
+{
+  "po_updates": [
+    {
+      "po_ref": "PO-12",
+      "source": "body",
+      "evidence": "Confirming the revised schedule for PO-12.",
+      "confidence": 1.0,
+      "line_updates": [
+        {
+          "sku_or_code": "SKU-2",
+          "field": "delivery_date",
+          "new_value": "2026-02-03",
+          "evidence": "Delivery for SKU-2 is now confirmed for 3 February 2026.",
+          "confidence": 1.0
+        }
+      ]
+    }
+  ],
+  "unmatched_mentions": []
+}

@@ -1,0 +1,17 @@
+From: Big Supplier <big@supplier.com>
+To: ops@acme.test
+Subject: PO-12 delivery confirmation
+Date: Mon, 12 Jan 2026 09:14:00 +0000
+Message-ID: <fixture-01-delivery-confirmation@supplier.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hi,
+
+Confirming the revised schedule for PO-12.
+
+Delivery for SKU-2 is now confirmed for 3 February 2026. Everything else on
+that order is unchanged.
+
+Regards,
+Big Supplier

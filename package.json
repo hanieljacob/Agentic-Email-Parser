@@ -16,7 +16,7 @@
     "migrate": "dotenv -e .env -- bash -c 'for f in migrations/*.sql; do echo \"--- $f\"; psql $DATABASE_URL < $f; done'",
     "seed": "backend/.venv/bin/python -m backend.scripts.seed",
     "api": "backend/.venv/bin/python -m uvicorn backend.main:app --port 8000 --reload",
-    "setup": "createdb email_parser || true && python3 -m venv backend/.venv && backend/.venv/bin/pip install -q -r backend/requirements-dev.txt && pnpm migrate && pnpm seed"
+    "setup": "createdb email_parser || true && python3 -m venv backend/.venv && backend/.venv/bin/pip install -q -r backend/requirements-dev.txt && pnpm migrate"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",

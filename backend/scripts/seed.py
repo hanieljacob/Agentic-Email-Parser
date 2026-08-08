@@ -1,15 +1,24 @@
-"""Seed canonical tables from db.xlsx.
+"""Reset the database to the demo state.
 
-Reads backend/data/db.xlsx (or XLSX_PATH), truncates the canonical tables
-and reloads them, mapping the workbook's integer ids onto UUIDs.
+Two steps, so that one command gives a reviewer something to look at:
 
-Safe to run repeatedly in development.
+  1. Reload the canonical tables from backend/data/db.xlsx, mapping the
+     workbook's integer ids onto UUIDs.
+  2. Ingest the committed fixture emails through the real pipeline, which
+     populates the review queue.
 
-    python -m backend.scripts.seed
+This is destructive by design — it truncates the pipeline tables too, so
+running it twice produces exactly the same state rather than stacking a
+second set of proposed changes on top of the first. It is a development and
+demo command; nothing calls it at runtime.
+
+    python -m backend.scripts.seed              # canonical data + fixtures
+    python -m backend.scripts.seed --no-fixtures
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import datetime as dt
 import os
@@ -82,9 +91,15 @@ async def seed() -> None:
     async with connection() as conn:
         async with conn.transaction():
             # Truncate in reverse FK dependency order; CASCADE handles children.
+            # The pipeline tables go too: proposed_changes reference canonical
+            # rows by a logical FK that Postgres cannot cascade, so leaving
+            # them behind would strand them against ids that no longer exist —
+            # and re-running the fixtures would stack a duplicate queue.
             await conn.execute(
                 """
-                TRUNCATE supplier_email_aliases, supplier_product,
+                TRUNCATE audit_log, proposed_changes, extraction_runs,
+                         email_attachments, emails, supplier_corrections,
+                         supplier_email_aliases, supplier_product,
                          purchase_order_line, purchase_order,
                          product, supplier
                 RESTART IDENTITY CASCADE
@@ -181,13 +196,31 @@ async def seed() -> None:
                 )
             print(f"  ✓ {len(supplier_products)} supplier_products")
 
-    print("Seed complete.")
+    print("Canonical tables reloaded.")
 
 
 async def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--no-fixtures",
+        action="store_true",
+        help="load canonical data only, leaving the review queue empty",
+    )
+    args = parser.parse_args()
+
     await open_pool()
     try:
         await seed()
+        if not args.no_fixtures:
+            from backend.scripts.load_fixtures import load_fixtures
+
+            print("Ingesting fixture emails through the pipeline...")
+            totals = await load_fixtures()
+            print(
+                f"  {totals['proposed']} changes proposed, "
+                f"{totals['auto_applied']} auto-applied, "
+                f"{totals['pending']} awaiting review."
+            )
     finally:
         await close_pool()
 
