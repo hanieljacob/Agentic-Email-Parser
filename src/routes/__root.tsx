@@ -37,6 +37,26 @@ export const Route = createRootRoute({
         rel: 'stylesheet',
         href: appCss,
       },
+      // SVG first for anything modern; the PNG is the fallback for browsers
+      // that ignore it. There is no .ico — nothing still in use needs one.
+      {
+        rel: 'icon',
+        type: 'image/svg+xml',
+        href: '/favicon.svg',
+      },
+      {
+        rel: 'icon',
+        type: 'image/png',
+        href: '/logo192.png',
+      },
+      {
+        rel: 'apple-touch-icon',
+        href: '/logo192.png',
+      },
+      {
+        rel: 'manifest',
+        href: '/manifest.json',
+      },
     ],
   }),
   notFoundComponent: NotFound,
@@ -57,17 +77,22 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         {/* Top-right keeps toasts clear of the review dialog's footer
             actions, which sit bottom-right. */}
         <Toaster position="top-right" />
-        <TanStackDevtools
-          config={{
-            position: 'bottom-right',
-          }}
-          plugins={[
-            {
-              name: 'Tanstack Router',
-              render: <TanStackRouterDevtoolsPanel />,
-            },
-          ]}
-        />
+        {/* Opt-in, because `pnpm dev` is the path a reviewer is shown and the
+            floating devtools badge sits on top of the UI. Turn it on with
+            VITE_DEVTOOLS=true pnpm dev. Production builds drop it either way. */}
+        {import.meta.env.VITE_DEVTOOLS === 'true' && (
+          <TanStackDevtools
+            config={{
+              position: 'bottom-right',
+            }}
+            plugins={[
+              {
+                name: 'Tanstack Router',
+                render: <TanStackRouterDevtoolsPanel />,
+              },
+            ]}
+          />
+        )}
         <Scripts />
       </body>
     </html>

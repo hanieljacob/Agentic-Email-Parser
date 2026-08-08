@@ -148,6 +148,9 @@ pnpm seed                     # canonical data + fixture emails
 | `pnpm build`   | Production build                          |
 | `pnpm test`    | Backend test suite (pytest)               |
 
+The TanStack devtools badge is off by default so it does not sit on top of the
+UI during a demo. Bring it back with `VITE_DEVTOOLS=true pnpm dev`.
+
 Every environment variable is documented in `.env.example`. Implementation detail, the stack rationale and the known gotchas live in [DESIGN.md](DESIGN.md); the schema and the concurrency check are in [migrations/README.md](migrations/README.md).
 
 ### Tests
