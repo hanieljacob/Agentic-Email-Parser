@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Toaster as Sonner, type ToasterProps } from 'sonner'
+import { Toaster as Sonner } from 'sonner'
+import type { ToasterProps } from 'sonner'
 import {
   CircleCheckIcon,
   InfoIcon,
@@ -19,7 +20,8 @@ function useDocumentTheme(): 'light' | 'dark' {
 
   useEffect(() => {
     const root = document.documentElement
-    const read = () => setTheme(root.classList.contains('dark') ? 'dark' : 'light')
+    const read = () =>
+      setTheme(root.classList.contains('dark') ? 'dark' : 'light')
 
     read()
     const observer = new MutationObserver(read)

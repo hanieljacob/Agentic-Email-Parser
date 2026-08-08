@@ -1,197 +1,115 @@
-# Agentic-Email-Parser — Agent Configuration
+# Design notes
 
-<!-- intent-skills:start -->
-## Skill Loading
-
-Before substantial work:
-- Skill check: run `npx @tanstack/intent@latest list`, or use skills already listed in context.
-- Skill guidance: if one local skill clearly matches the task, run `npx @tanstack/intent@latest load <package>#<skill>` and follow the returned `SKILL.md`.
-- Monorepos: when working across packages, run the skill check from the workspace root and prefer the local skill for the package being changed.
-- Multiple matches: prefer the most specific local skill for the package or concern you are changing; load additional skills only when the task spans multiple packages or concerns.
-<!-- intent-skills:end -->
+Implementation detail behind the [README](README.md). The README covers what the system does and why the pipeline is shaped the way it is; this covers how it is put together, and the things that would otherwise cost an hour to rediscover.
 
 ---
 
-## Project Overview
+## Stack
 
-**Display name:** Agentic-Email-Parser  
-**Package name:** `agentic-email-parser` (TanStack CLI enforces lowercase)  
-**Purpose:** A full-stack React application for parsing and structuring email content using AI/LLM capabilities, built on TanStack Start.
+| Concern     | Choice                                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------------- |
+| Backend     | FastAPI — one app, one uvicorn process                                                                  |
+| Database    | PostgreSQL via psycopg 3 (async pool). Raw SQL, no ORM                                                  |
+| Validation  | Pydantic v2 — the same models validate LLM output and shape API responses                               |
+| Settings    | pydantic-settings, one `Settings` object (`backend/config.py`)                                          |
+| LLM         | OpenRouter through the OpenAI-compatible Python client, behind a provider protocol with an offline stub |
+| Attachments | pypdf · python-docx · openpyxl                                                                          |
+| Frontend    | **React 19**                                                                                            |
+| Framework   | TanStack Start — SSR, build, and file-based routing via TanStack Router                                 |
+| UI          | shadcn/ui (radix base) on Tailwind CSS v4, lucide-react icons                                           |
+| Build       | Vite 8                                                                                                  |
+| Tests       | pytest against a real PostgreSQL database                                                               |
 
----
-
-## Exact CLI Commands Used
-
-```bash
-# Scaffold — CLI enforces lowercase names; capital letters are rejected
-npx @tanstack/cli@latest create agentic-email-parser --agent --tailwind --add-ons eslint
-
-# Switch package manager from npm to pnpm
-rm -f package-lock.json && rm -rf node_modules && pnpm install
-
-# Wire TanStack Intent for agent-aware skill loading
-npx @tanstack/intent@latest install
-
-# Inspect available skills (run from project root)
-npx @tanstack/intent@latest list
-```
-
-> The `--tailwind` flag is deprecated and always enabled; it was passed per the scaffold spec but has no effect.
+**React vs TanStack.** Not alternatives. React is the UI library; TanStack Start is the framework around it, filling the role Next.js would. Every component in `src/` is an ordinary React 19 component.
 
 ---
 
-## Chosen Stack & Integrations
-
-| Concern | Choice |
-|---|---|
-| Framework | TanStack Start (`@tanstack/react-start`) |
-| Routing | TanStack Router — file-based, auto-generated `routeTree.gen.ts` |
-| UI layer | React 19 |
-| Styling | Tailwind CSS v4 (`@tailwindcss/vite`) + `@tailwindcss/typography` |
-| Fonts | Manrope (sans) + Fraunces (display) via Google Fonts |
-| Icons | `lucide-react` |
-| Linting | ESLint (`@tanstack/eslint-config`) |
-| Formatting | Prettier (`prettier.config.js`) |
-| Testing | Vitest + `@testing-library/react` + jsdom |
-| Devtools | `@tanstack/devtools-vite` + TanStack Router Devtools panel |
-| Build tool | Vite 8 |
-| TypeScript | TS 5 |
-| Package manager | **pnpm** (switched from npm post-scaffold; `.cta.json` still shows `npm`) |
-
----
-
-## Project Structure
+## Layout
 
 ```
-agentic-email-parser/
-├── src/
-│   ├── components/
-│   │   ├── Footer.tsx
-│   │   ├── Header.tsx
-│   │   └── ThemeToggle.tsx
-│   ├── routes/
-│   │   ├── __root.tsx        # Document shell: <html>, HeadContent, Scripts
-│   │   ├── index.tsx         # Home page (/)
-│   │   └── about.tsx         # About page (/about)
-│   ├── router.tsx            # getRouter() factory + Register type declaration
-│   └── styles.css            # Global styles + Tailwind import + CSS custom props
-├── public/
-├── AGENTS.md                 # This file
-├── README.md
-├── eslint.config.js
-├── package.json
-├── pnpm-lock.yaml
-├── prettier.config.js
-├── tsconfig.json
-└── vite.config.ts
+backend/
+  main.py          FastAPI app — lifespan opens the pool and starts the worker
+  config.py        every environment knob, typed, in one place
+  db.py            psycopg 3 async pool
+  schemas.py       Pydantic models for LLM output + the JSON schema sent to the model
+  prompt.py        SYSTEM_PROMPT and the supplier-context formatter
+  llm.py           provider protocol: OpenRouterProvider | StubProvider
+  ingest.py        RFC 822 → emails row (+ attachments)
+  extract.py       email → context → LLM → extraction_runs row
+  match.py         extraction_run → proposed_changes, with confidence scoring
+  writeback.py     the only writer to canonical data
+  learning.py      assign_supplier / correct_sku
+  worker.py        retry loop, runs inside the API process
+  pipeline.py      extract → match, the one definition of "process this email"
+  suppliers.py     sender address → supplier
+  routers/         emails · proposed_changes · monitoring
+  scripts/         seed.py · load_fixtures.py
+  fixtures/        committed demo emails + their canned extractions
+  tests/
+src/
+  lib/api.ts       typed client — the frontend's only route to data
+  routes/          index (compose) · review · monitoring
+  components/ui/   shadcn components
 ```
 
-`routeTree.gen.ts` is auto-generated by the router plugin during `pnpm dev` / `pnpm build` — never edit it manually.
+The frontend holds no database connection and writes no SQL. Everything goes through `src/lib/api.ts` to FastAPI.
 
 ---
 
-## Key Architectural Decisions
+## Decisions worth knowing
 
-1. **File-based routing** — routes live in `src/routes/`. Adding a file auto-registers a route. The router plugin generates `src/routeTree.gen.ts`.
+**One process, not four.** Ingest, extraction, the REST API and the retry worker used to be four services on three ports in two languages. They are now one FastAPI app; the worker is an `asyncio` task started in the lifespan. Fewer moving parts to explain, and `pnpm api` is the whole backend.
 
-2. **Server functions over API routes** — use `createServerFn` from `@tanstack/react-start` for all server-only logic (LLM calls, secret access, DB queries). Server routes (`route.server`) are reserved for REST endpoints.
+**Raw SQL, no ORM.** The schema is migration-first and the queries are the interesting part — the confidence join, the `FOR UPDATE` version check, the monitoring views. An ORM would hide exactly what is worth showing. `psycopg.sql.Identifier` covers the one place a column name is dynamic.
 
-3. **Isomorphic by default** — every file and loader runs on both server and client unless wrapped in `createServerFn` / `createServerOnlyFn`. This is the #1 gotcha: loaders are NOT server-only.
+**The Pydantic models do double duty.** `ExtractionOutput` is converted to a JSON schema and sent as `response_format`, constraining the model at generation time, and the same model validates the response before anything reaches the database. Belt and braces, because structured-output support varies by model on OpenRouter.
 
-4. **Typed inference everywhere** — never cast, never annotate inferred values. Types flow from `createFileRoute`, `createServerFn`, and `useLoaderData`.
+**Provider behind a protocol.** `ExtractionProvider` has one method. That is what makes the demo runnable offline, the tests deterministic and free, and a provider swap a one-file change. OpenRouter and Ollama are the same class with different hosts, since both speak the OpenAI API.
 
-5. **Dark mode via CSS class** — `THEME_INIT_SCRIPT` in `__root.tsx` applies `light`/`dark` class to `<html>` before hydration to prevent flash. Theme is stored in `localStorage`.
+**`model_version` travels with the response, not the provider.** `complete()` returns a `Completion(text, model_version)`. With a fallback chain the provider that answered is not known until it has, and reading it off shared provider state afterwards would race between concurrent extractions. Returning it means every `extraction_runs` row names the model that actually produced its output.
 
-6. **TanStack Devtools** — registered in `__root.tsx` with the Router devtools panel as a plugin. Stripped from production builds via `@tanstack/devtools-vite`.
+**Fallback falls through on availability, not on quality.** `FallbackProvider` tries each provider in order and returns the first that answers. A raised error — dead key, rate limit, unreachable host — moves to the next. A response that comes back but fails validation does not: that is a modelling problem, and retrying it against a different model would hide a bad prompt behind a second opinion. Validation happens in `extract()`, after the chain has returned.
 
----
+**Async throughout.** psycopg's async pool, `AsyncOpenAI`, async route handlers. The work is almost entirely I/O — Postgres and one slow HTTP call — so this is the shape that lets one process handle concurrent extractions.
 
-## Environment Variable Requirements
-
-| Variable | Purpose | Required |
-|---|---|---|
-| *(none yet)* | — | — |
-
-**Future (when adding email parsing):**
-
-| Variable | Purpose |
-|---|---|
-| `ANTHROPIC_API_KEY` | Claude API key for email content analysis |
-| `OPENAI_API_KEY` | Alternative LLM provider |
-
-Server-side env vars must be accessed inside `createServerFn` handlers. Never read secrets in loaders (isomorphic) or components. `VITE_` prefix exposes vars to the client — avoid for secrets.
+**Tests hit a real database.** The properties worth testing are transactional: optimistic locking, audit rows, status transitions, two proposals racing on one row. A mocked connection would only assert that the mock was called. `backend/tests/conftest.py` drops, creates and migrates a test database per run, and pins `LLM_PROVIDER=stub` before any settings are read, so a test run can never make a billable call.
 
 ---
 
-## Development Scripts
+## Gotchas
 
-```bash
-pnpm dev        # Dev server on :3000
-pnpm build      # Production build → .output/
-pnpm preview    # Preview production build
-pnpm test       # Vitest run
-pnpm lint       # ESLint check
-pnpm format     # Prettier check
-pnpm check      # Prettier write + ESLint fix
-```
+1. **`AUTO_APPLY_THRESHOLD=0` does not disable auto-apply.** The comparison is `>=`, so `0` matches everything and empties the review queue. Use a value above `1.0` to route everything to a human. Pinned by a test.
 
----
+2. **Model output that is not JSON is recorded as a _successful_, empty extraction.** `{}` validates because every top-level field has a default, so a refusal reads as "no PO updates found" rather than as an error, and is never retried. Schema _violations_ are handled properly. Carried over from the TypeScript implementation deliberately, and pinned by a test so it stays visible rather than accidental.
 
-## Deployment Notes
+3. **`normalize_ref` collapses zero runs anywhere, not just leading ones.** `PO-10`, `PO-010`, `PO-100` and `PO-1000` all normalise to `10`; `PO-12` collides with `PO-102`. Ported verbatim. Contained by the confidence model: a fuzzy PO hit caps combined confidence at 0.9, below the 0.95 threshold, so a mis-resolved reference always lands in review.
 
-- **Build output:** `.output/` directory (Vite + TanStack Start)
-- **Start production server:** `node .output/server/index.mjs`
-- **Supported targets:** Node.js, Bun, Cloudflare Workers, Vercel, Netlify (see `start-core/deployment` skill)
-- **SSR is on by default.** To selectively disable per-route: set `ssr: false` on `createFileRoute`. Full SPA mode available in Vite config.
-- No environment-specific config is set up yet.
+4. **`LLM_PROVIDER=auto` uses OpenRouter the moment a key exists in the environment.** `.env.example` sets `stub` explicitly for that reason, and `load_fixtures.py` constructs the stub directly rather than reading the setting — otherwise the demo would depend on the machine it runs on.
 
----
+5. **Plugin order in `vite.config.ts`:** `tanstackStart()` must come before `viteReact()`, or route generation breaks.
 
-## Known Gotchas
+6. **`src/routeTree.gen.ts` is generated.** Never edit it; `pnpm dev` regenerates it.
 
-1. **Plugin order in `vite.config.ts`:** `tanstackStart()` must come before `viteReact()`. Reversing them breaks server function compilation and route generation.
+7. **shadcn's generated `sonner.tsx` imports `next-themes`.** This is not a Next app and already has a theme mechanism, so it was rewritten to read the `light`/`dark` class the inline script in `__root.tsx` stamps on `<html>` before hydration. Re-running the shadcn generator will overwrite that file.
 
-2. **No `"use server"` directive** — TanStack Start uses `createServerFn`, not the Next.js/Remix `"use server"` directive. Don't import patterns from those frameworks.
+8. **shadcn's `DialogContent` defaults to `sm:max-w-sm`.** Overriding it needs a `sm:` variant of its own — a bare `max-w-3xl` loses to it.
 
-3. **Package manager mismatch:** `.cta.json` records `packageManager: "npm"` (the scaffold default) but the project runs on **pnpm**. Use `pnpm` for all install/run commands.
+9. **pnpm needs `@rsbuild/core` explicitly.** `@tanstack/start-plugin-core` eagerly imports the rsbuild adapter while Vite loads its config. npm's hoisting hides this; pnpm's strict isolation surfaces it as a build error, so it is a devDependency despite being otherwise unused.
 
-4. **`routeTree.gen.ts` is generated** — never edit. If it's missing, run `pnpm dev` once to regenerate.
-
-5. **No `verbatimModuleSyntax` in tsconfig** — enabling it causes server bundle leakage into the client bundle. Keep it off.
-
-6. **Loaders run on both server and client** — never put secrets, DB clients, or Node-only APIs directly in a `loader`. Always delegate to a `createServerFn`.
-
-7. **`shellComponent` vs `component` in root route** — the scaffold uses `shellComponent` (renders the full `<html>` document). Child routes use `component` with `<Outlet />` rendering into the shell.
-
-8. **pnpm requires `@rsbuild/core` explicitly** — `@tanstack/start-plugin-core` eagerly imports the rsbuild adapter during Vite config loading. npm's hoisting hides this; pnpm's strict isolation surfaces it as a build error. `@rsbuild/core` is installed as a devDependency to satisfy it (it's otherwise unused in this Vite project).
+10. **`pnpm seed` is destructive.** It truncates the pipeline tables as well as the canonical ones, so re-running produces an identical demo state rather than stacking a second queue.
 
 ---
 
-## TanStack Intent Skills — Quick Reference
+## What TanStack Start is still doing
 
-Run `npx @tanstack/intent@latest list` from the project root to see all 30 skills across 9 packages. Key skills for this project:
+Worth being able to answer, since the port removed most of what it was originally there for. All the `createServerFn` handlers are gone — the frontend talks to FastAPI over HTTP — so Start now provides SSR, the file-based router and the build. Loaders run on the server for the first paint and on the client for later navigations, which is why `src/lib/api.ts` uses absolute URLs.
 
-| Task | Load command |
-|---|---|
-| Server functions (LLM calls, auth, DB) | `npx @tanstack/intent@latest load @tanstack/start-client-core#start-core/server-functions` |
-| Middleware (logging, auth, context) | `npx @tanstack/intent@latest load @tanstack/start-client-core#start-core/middleware` |
-| File-based routing | `npx @tanstack/intent@latest load @tanstack/router-core#router-core` |
-| Auth & route guards | `npx @tanstack/intent@latest load @tanstack/router-core#router-core/auth-and-guards` |
-| Data loading / loaders | `npx @tanstack/intent@latest load @tanstack/router-core#router-core/data-loading` |
-| Deployment config | `npx @tanstack/intent@latest load @tanstack/start-client-core#start-core/deployment` |
-| React Start overview | `npx @tanstack/intent@latest load @tanstack/react-start#react-start` |
-| Execution model (isomorphic) | `npx @tanstack/intent@latest load @tanstack/start-client-core#start-core/execution-model` |
-
-Always load the relevant skill before making architectural or library-specific changes. Skills ship with the installed packages and reflect the exact version in use.
+A plain Vite + React SPA would also work here, with a smaller dependency footprint. Start earns its place through the router's typed loaders, `pendingComponent` and `errorComponent`: the review queue's loading and error states come from the router rather than hand-rolled state.
 
 ---
 
-## Next Steps
+## Colour
 
-- [ ] **Add email parsing route** — `src/routes/parse.tsx` with a form for pasting raw email content
-- [ ] **Create server function for LLM parsing** — `createServerFn` in `src/server/parse-email.ts` calling Claude or OpenAI
-- [ ] **Add env var handling** — `.env.local` for `ANTHROPIC_API_KEY`; document in this file above
-- [ ] **Define parsed email schema** — Zod schema for structured output (subject, sender, intent, action items, etc.)
-- [ ] **Input validation** — use `createServerFn().inputValidator(zodSchema)` on the parse endpoint
-- [ ] **History / results route** — store and display past parse results (`src/routes/history.tsx`)
-- [ ] **Auth (optional)** — protect routes with `beforeLoad` + redirect; load `auth-and-guards` skill first
+The review queue's palette is semantic, not decorative. Confidence bands are a status encoding — green `≥ 0.9`, amber `0.75–0.9`, red below — validated for colour-vision deficiency (worst adjacent pair ΔE 11.3 simulated, 27.6 normal vision). Colour is never the only channel: every band also shows the percentage and a meter whose length encodes the same number.
+
+Field types take validated _categorical_ slots instead, so a field can never read as a severity. Tokens live at the top of `src/styles.css`; the `tint` value is the pure hue used for fills and borders, and `ink` is a darkened step for text and meter bars, so both clear 4.5:1 against the card in either theme.

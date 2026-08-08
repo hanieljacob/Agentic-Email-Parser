@@ -1,7 +1,6 @@
-
-@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap");
-@import "tailwindcss";
-@import "tw-animate-css";
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import 'tailwindcss';
+@import 'tw-animate-css';
 @plugin "@tailwindcss/typography";
 
 /* The theme script in __root.tsx puts `light`/`dark` on <html> before
@@ -9,7 +8,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
 }
 
 /* shadcn/ui tokens, mapped onto the palette the app already uses so the
@@ -73,19 +72,19 @@
   --foam: #f8fafc;
   --surface: rgba(255, 255, 255, 0.88);
   --surface-strong: rgba(255, 255, 255, 0.96);
-  --line: rgba(15, 23, 42, 0.10);
+  --line: rgba(15, 23, 42, 0.1);
   --inset-glint: rgba(255, 255, 255, 0.92);
   --kicker: #2563eb;
   --bg-base: #e2e8f0;
-  --header-bg: rgba(248, 250, 252, 0.90);
-  --chip-bg: rgba(255, 255, 255, 0.90);
+  --header-bg: rgba(248, 250, 252, 0.9);
+  --chip-bg: rgba(255, 255, 255, 0.9);
   --chip-line: rgba(37, 99, 235, 0.18);
   --link-bg-hover: rgba(255, 255, 255, 0.95);
   --hero-a: rgba(59, 130, 246, 0.18);
-  --hero-b: rgba(37, 99, 235, 0.10);
+  --hero-b: rgba(37, 99, 235, 0.1);
 }
 
-:root[data-theme="dark"] {
+:root[data-theme='dark'] {
   --sea-ink: #f1f5f9;
   --sea-ink-soft: #94a3b8;
   --lagoon: #60a5fa;
@@ -96,10 +95,10 @@
   --surface: rgba(15, 23, 42, 0.82);
   --surface-strong: rgba(10, 17, 33, 0.94);
   --line: rgba(148, 163, 184, 0.16);
-  --inset-glint: rgba(148, 163, 184, 0.10);
+  --inset-glint: rgba(148, 163, 184, 0.1);
   --kicker: #93c5fd;
   --bg-base: #07101f;
-  --header-bg: rgba(7, 16, 31, 0.90);
+  --header-bg: rgba(7, 16, 31, 0.9);
   --chip-bg: rgba(15, 23, 42, 0.92);
   --chip-line: rgba(96, 165, 250, 0.22);
   --link-bg-hover: rgba(20, 32, 52, 0.88);
@@ -188,7 +187,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:not([data-theme='light']) {
     --sea-ink: #f1f5f9;
     --sea-ink-soft: #94a3b8;
     --lagoon: #60a5fa;
@@ -199,10 +198,10 @@
     --surface: rgba(15, 23, 42, 0.82);
     --surface-strong: rgba(10, 17, 33, 0.94);
     --line: rgba(148, 163, 184, 0.16);
-    --inset-glint: rgba(148, 163, 184, 0.10);
+    --inset-glint: rgba(148, 163, 184, 0.1);
     --kicker: #93c5fd;
     --bg-base: #07101f;
-    --header-bg: rgba(7, 16, 31, 0.90);
+    --header-bg: rgba(7, 16, 31, 0.9);
     --chip-bg: rgba(15, 23, 42, 0.92);
     --chip-line: rgba(96, 165, 250, 0.22);
     --link-bg-hover: rgba(20, 32, 52, 0.88);
@@ -228,14 +227,19 @@ body {
   background:
     radial-gradient(900px 500px at -5% -8%, var(--hero-a), transparent 55%),
     radial-gradient(800px 500px at 110% -10%, var(--hero-b), transparent 60%),
-    linear-gradient(180deg, var(--sand) 0%, var(--foam) 60%, var(--bg-base) 100%);
+    linear-gradient(
+      180deg,
+      var(--sand) 0%,
+      var(--foam) 60%,
+      var(--bg-base) 100%
+    );
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 body::after {
-  content: "";
+  content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
@@ -282,7 +286,7 @@ pre code {
 }
 
 .display-title {
-  font-family: "Fraunces", Georgia, serif;
+  font-family: 'Fraunces', Georgia, serif;
 }
 
 .island-shell {
@@ -304,13 +308,16 @@ pre code {
 
 .feature-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(37, 99, 235, 0.30);
+  border-color: rgba(37, 99, 235, 0.3);
 }
 
 button,
 .island-shell,
 a {
-  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease,
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease,
     transform 150ms ease;
 }
 
@@ -331,7 +338,7 @@ a {
 }
 
 .nav-link::after {
-  content: "";
+  content: '';
   position: absolute;
   left: 0;
   bottom: -6px;

@@ -3,13 +3,8 @@ import { useState } from 'react'
 import { ArrowRight, Inbox, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
-import {
-  api,
-  REJECTION_REASONS,
-  type MonitoringData,
-  type ProposedChange,
-  type RejectionReason,
-} from '#/lib/api'
+import { api, REJECTION_REASONS } from '#/lib/api'
+import type { MonitoringData, ProposedChange, RejectionReason } from '#/lib/api'
 import { Button } from '#/components/ui/button'
 import {
   Card,
@@ -128,7 +123,8 @@ function ConfidenceMeter({
             color: 'var(--conf-ink)',
             backgroundColor:
               'color-mix(in oklab, var(--conf-tint) 12%, transparent)',
-            borderColor: 'color-mix(in oklab, var(--conf-tint) 30%, transparent)',
+            borderColor:
+              'color-mix(in oklab, var(--conf-tint) 30%, transparent)',
           }}
         >
           {percent(value)}
@@ -316,7 +312,10 @@ function ReviewDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : close())}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => (next ? onOpenChange(true) : close())}
+    >
       {/* sm:max-w-* is needed to beat the component's own sm:max-w-sm default */}
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
@@ -362,14 +361,20 @@ function ReviewDialog({
               </div>
               <Separator />
               <div className="flex justify-between gap-4">
-                <dt className="shrink-0 text-muted-foreground">Extraction confidence</dt>
+                <dt className="shrink-0 text-muted-foreground">
+                  Extraction confidence
+                </dt>
                 <dd className="tabular-nums">
                   {percent(change.extraction_confidence)}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt className="shrink-0 text-muted-foreground">Match confidence</dt>
-                <dd className="tabular-nums">{percent(change.match_confidence)}</dd>
+                <dt className="shrink-0 text-muted-foreground">
+                  Match confidence
+                </dt>
+                <dd className="tabular-nums">
+                  {percent(change.match_confidence)}
+                </dd>
               </div>
               <div className="flex items-center justify-between gap-4 pt-1 font-medium">
                 <dt>Combined</dt>
@@ -401,7 +406,9 @@ function ReviewDialog({
             </h3>
             <div className="rounded-lg border border-border">
               <div className="space-y-1 border-b border-border p-3 text-sm">
-                <p className="font-medium">{change.subject || '(no subject)'}</p>
+                <p className="font-medium">
+                  {change.subject || '(no subject)'}
+                </p>
                 <p className="font-mono text-xs text-muted-foreground">
                   {change.sender}
                 </p>

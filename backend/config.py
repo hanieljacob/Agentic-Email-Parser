@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-ProviderName = Literal["auto", "openrouter", "stub"]
+ProviderName = Literal["auto", "openrouter", "ollama", "stub"]
 
 
 class Settings(BaseSettings):
@@ -34,7 +34,21 @@ class Settings(BaseSettings):
     llm_provider: ProviderName = "auto"
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    model_name: str = "anthropic/claude-sonnet-4"
+    # A zero-cost model, so a clone with any OpenRouter key can run live
+    # extraction without credit. Swap for a frontier model in production.
+    model_name: str = "nvidia/nemotron-3-super-120b-a12b:free"
+
+    # Providers to try, in order, when the primary one fails — a dead key, a
+    # rate limit, an unreachable host. Comma-separated, e.g. "ollama,stub".
+    # Empty (the default) means no fallback: a failed call fails the email.
+    llm_fallback: str = ""
+
+    # Ollama speaks the OpenAI API, so it needs no client of its own.
+    ollama_base_url: str = "http://localhost:11434/v1"
+    ollama_model: str = "llama3.1"
+    # Turn off if the local model rejects json_schema response_format; the
+    # schema is in the system prompt either way and output is still validated.
+    ollama_structured_output: bool = True
 
     # ── pipeline ────────────────────────────────────────────────────────────
     # Changes with combined_confidence >= this threshold are auto-applied
@@ -57,11 +71,16 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000"]
 
     @property
-    def resolved_provider(self) -> Literal["openrouter", "stub"]:
+    def resolved_provider(self) -> Literal["openrouter", "ollama", "stub"]:
         """Which provider `llm_provider="auto"` actually resolves to."""
         if self.llm_provider != "auto":
             return self.llm_provider
         return "openrouter" if self.openrouter_api_key else "stub"
+
+    @property
+    def fallback_providers(self) -> list[str]:
+        """LLM_FALLBACK parsed into an ordered list of provider names."""
+        return [name.strip() for name in self.llm_fallback.split(",") if name.strip()]
 
 
 @lru_cache

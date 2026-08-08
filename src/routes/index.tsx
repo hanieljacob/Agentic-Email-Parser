@@ -1,11 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import {
-  useState,
-  useCallback,
-  useId,
-  useEffect,
-  useMemo,
-} from 'react'
+import { useState, useCallback, useId, useEffect, useMemo } from 'react'
 import {
   Paperclip,
   X,
@@ -121,7 +115,8 @@ function AttachmentChip({
 
   function Icon() {
     if (file.type.startsWith('image/')) return <Image className="h-3.5 w-3.5" />
-    if (file.type === 'application/pdf') return <FileText className="h-3.5 w-3.5" />
+    if (file.type === 'application/pdf')
+      return <FileText className="h-3.5 w-3.5" />
     if (
       file.type.includes('spreadsheet') ||
       file.type.includes('excel') ||
@@ -148,7 +143,9 @@ function AttachmentChip({
       <span className="max-w-[120px] truncate font-medium text-[var(--sea-ink)]">
         {file.name}
       </span>
-      <span className="text-[var(--sea-ink-soft)]/50">{formatBytes(file.size)}</span>
+      <span className="text-[var(--sea-ink-soft)]/50">
+        {formatBytes(file.size)}
+      </span>
 
       <button
         type="button"
@@ -164,15 +161,19 @@ function AttachmentChip({
 
 // ─── no-changes confirmation ───────────────────────────────────────────────────
 
-function NoChangesConfirmation({
+function ProcessedConfirmation({
   to,
   subject,
+  autoApplied,
   onNew,
 }: {
   to: string
   subject: string
+  /** Changes written back without review. Zero means nothing was extracted. */
+  autoApplied: number
   onNew: () => void
 }) {
+  const applied = autoApplied > 0
   return (
     <div className="island-shell rise-in overflow-hidden rounded-2xl">
       <div className="h-1 w-full bg-[linear-gradient(90deg,var(--lagoon-deep),var(--lagoon),#93c5fd)]" />
@@ -189,19 +190,27 @@ function NoChangesConfirmation({
 
         <p className="island-kicker mb-2">Email processed</p>
         <h2 className="display-title m-0 mb-2 text-2xl font-bold text-[var(--sea-ink)]">
-          No PO changes detected
+          {applied
+            ? `${autoApplied} change${autoApplied === 1 ? '' : 's'} applied automatically`
+            : 'No PO changes detected'}
         </h2>
         <p className="mb-8 text-sm text-[var(--sea-ink-soft)]/70">
-          The email was saved but the LLM found no actionable purchase order updates.
+          {applied
+            ? 'Every change scored at or above the auto-apply threshold, so nothing needed review. Each one is recorded in the audit log.'
+            : 'The email was saved but no actionable purchase order updates were found.'}
         </p>
 
         <div className="mx-auto mb-8 max-w-sm divide-y divide-[var(--line)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)] text-left text-sm">
           <div className="flex gap-3 px-4 py-3">
-            <span className="w-14 flex-shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--sea-ink-soft)]/50">To</span>
+            <span className="w-14 flex-shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--sea-ink-soft)]/50">
+              To
+            </span>
             <span className="truncate text-[var(--sea-ink)]">{to}</span>
           </div>
           <div className="flex gap-3 px-4 py-3">
-            <span className="w-14 flex-shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--sea-ink-soft)]/50">Subject</span>
+            <span className="w-14 flex-shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--sea-ink-soft)]/50">
+              Subject
+            </span>
             <span className="truncate text-[var(--sea-ink)]">{subject}</span>
           </div>
         </div>
@@ -234,11 +243,11 @@ function bufferToBase64(buf: ArrayBuffer): string {
 type Status = 'idle' | 'sending' | 'processing' | 'done' | 'error'
 
 const STATUS_LABEL: Record<Status, string> = {
-  idle:       'Send',
-  sending:    'Sending…',
+  idle: 'Send',
+  sending: 'Sending…',
   processing: 'Analysing…',
-  done:       'Done',
-  error:      'Retry',
+  done: 'Done',
+  error: 'Retry',
 }
 
 function ComposePage() {
@@ -260,9 +269,13 @@ function ComposePage() {
   const [dragging, setDragging] = useState(false)
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [autoApplied, setAutoApplied] = useState(0)
 
   const canSend =
-    from.trim() !== '' && to.trim() !== '' && subject.trim() !== '' && body.trim() !== ''
+    from.trim() !== '' &&
+    to.trim() !== '' &&
+    subject.trim() !== '' &&
+    body.trim() !== ''
 
   const completenessSteps = useMemo(
     () => [
@@ -288,10 +301,13 @@ function ComposePage() {
 
   const addFiles = useCallback((files: FileList | File[] | null) => {
     if (!files || files.length === 0) return
-    const arr = Array.from(files)  // snapshot before input is cleared
+    const arr = Array.from(files) // snapshot before input is cleared
     setAttachments((prev) => {
       const existing = new Set(prev.map((f) => `${f.name}::${f.size}`))
-      return [...prev, ...arr.filter((f) => !existing.has(`${f.name}::${f.size}`))]
+      return [
+        ...prev,
+        ...arr.filter((f) => !existing.has(`${f.name}::${f.size}`)),
+      ]
     })
   }, [])
 
@@ -333,10 +349,20 @@ function ComposePage() {
       let raw: string
 
       if (attachments.length === 0) {
-        raw = [...headers, `Content-Type: text/plain; charset=utf-8`, ``, body].join('\r\n')
+        raw = [
+          ...headers,
+          `Content-Type: text/plain; charset=utf-8`,
+          ``,
+          body,
+        ].join('\r\n')
       } else {
         const boundary = `----=_Part_${crypto.randomUUID().replace(/-/g, '')}`
-        const textPart = [`--${boundary}`, `Content-Type: text/plain; charset=utf-8`, ``, body].join('\r\n')
+        const textPart = [
+          `--${boundary}`,
+          `Content-Type: text/plain; charset=utf-8`,
+          ``,
+          body,
+        ].join('\r\n')
         const attachmentParts = await Promise.all(
           attachments.map(async (file) => {
             const b64 = bufferToBase64(await file.arrayBuffer())
@@ -363,7 +389,8 @@ function ComposePage() {
 
       setStatus('processing')
       const { email_id } = await api.ingestEmail(raw)
-      const { pending } = await api.runPipeline(email_id)
+      const { pending, auto_applied } = await api.runPipeline(email_id)
+      setAutoApplied(auto_applied)
 
       if (pending > 0) {
         await navigate({ to: '/review' })
@@ -392,13 +419,19 @@ function ComposePage() {
     setAttachments([])
     setStatus('idle')
     setErrorMsg(null)
+    setAutoApplied(0)
   }
 
   if (status === 'done') {
     return (
       <main className="page-wrap px-4 pb-16 pt-10">
         <div className="mx-auto max-w-[720px]">
-          <NoChangesConfirmation to={to} subject={subject} onNew={handleReset} />
+          <ProcessedConfirmation
+            to={to}
+            subject={subject}
+            autoApplied={autoApplied}
+            onNew={handleReset}
+          />
         </div>
       </main>
     )
@@ -448,10 +481,14 @@ function ComposePage() {
                 </button>
                 {busy ? (
                   <span className="text-[10px] text-[var(--sea-ink-soft)]/35">
-                    {status === 'sending' ? 'Ingesting email…' : 'Running LLM pipeline…'}
+                    {status === 'sending'
+                      ? 'Ingesting email…'
+                      : 'Running LLM pipeline…'}
                   </span>
                 ) : (
-                  <span className="text-[10px] text-[var(--sea-ink-soft)]/35">⌘ ↵ to send</span>
+                  <span className="text-[10px] text-[var(--sea-ink-soft)]/35">
+                    ⌘ ↵ to send
+                  </span>
                 )}
               </div>
             </div>
@@ -559,7 +596,9 @@ function ComposePage() {
                       key={`${file.name}::${file.size}::${i}`}
                       file={file}
                       onRemove={() =>
-                        setAttachments((prev) => prev.filter((_, idx) => idx !== i))
+                        setAttachments((prev) =>
+                          prev.filter((_, idx) => idx !== i),
+                        )
                       }
                     />
                   ))}

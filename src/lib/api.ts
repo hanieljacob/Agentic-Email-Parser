@@ -131,7 +131,10 @@ export const api = {
   rejectChange: (id: string, reason: RejectionReason, notes?: string) =>
     request<{ ok: boolean }>(`/proposed-changes/${id}/reject`, {
       method: 'POST',
-      body: JSON.stringify({ rejection_reason: reason, review_notes: notes ?? null }),
+      body: JSON.stringify({
+        rejection_reason: reason,
+        review_notes: notes ?? null,
+      }),
     }),
 
   ingestEmail: (mime: string) =>

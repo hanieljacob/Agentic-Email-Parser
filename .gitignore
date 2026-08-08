@@ -24,3 +24,6 @@ todos.json
 
 # Local attachment storage
 attachments/
+
+# Python test cache
+.pytest_cache

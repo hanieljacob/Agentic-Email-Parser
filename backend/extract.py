@@ -242,10 +242,13 @@ async def extract(
     llm_output: dict[str, Any] = {}
     status = "success"
     error_message: str | None = None
+    # Falls back to the configured provider's name if the call never returns,
+    # so a failed run still records what was tried.
+    model_version = getattr(provider, "name", "unknown")
 
     try:
         try:
-            raw = await provider.complete(SYSTEM_PROMPT, user_content)
+            completion = await provider.complete(SYSTEM_PROMPT, user_content)
         except Exception as vision_err:
             # Retry text-only if the model doesn't support vision (404 or 500)
             message = str(vision_err)
@@ -253,12 +256,18 @@ async def extract(
                 "image" in message or "500" in message
             ):
                 log.error("Vision call failed, retrying text-only: %s", message)
-                raw = await provider.complete(SYSTEM_PROMPT, base_text)
+                completion = await provider.complete(SYSTEM_PROMPT, base_text)
             else:
                 raise
 
+        # Whatever answered — the primary or something down the fallback
+        # chain — is what gets recorded against the run.
+        model_version = completion.model_version
+
         try:
-            parsed = ExtractionOutput.model_validate(parse_model_content(raw))
+            parsed = ExtractionOutput.model_validate(
+                parse_model_content(completion.text)
+            )
         except ValidationError as err:
             raise ValueError(f"Schema validation failed: {err}") from err
         llm_output = parsed.model_dump()
@@ -277,7 +286,7 @@ async def extract(
                 """,
                 (
                     email_id,
-                    provider.model_version,
+                    model_version,
                     json.dumps(llm_output),
                     status,
                     error_message,
