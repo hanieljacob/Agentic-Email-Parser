@@ -1,5 +1,4 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { createServerFn } from '@tanstack/react-start'
 import {
   useState,
   useCallback,
@@ -20,35 +19,7 @@ import {
   Plus,
   ArrowUpRight,
 } from 'lucide-react'
-import { pool } from '#/db.js'
-
-// ── server-side pipeline ──────────────────────────────────────────────────────
-
-const processEmail = createServerFn({ method: 'POST' })
-  .inputValidator((payload: { mime: string }) => payload)
-  .handler(async ({ data: { mime } }) => {
-    // Ingest — server-to-server, no CORS
-    const ingestRes = await fetch('http://localhost:8000/emails?no_pipeline=true', {
-      method: 'POST',
-      body: mime,
-    })
-    if (!ingestRes.ok) throw new Error(`Ingest failed: ${ingestRes.status}`)
-    const emailId = (await ingestRes.text()).trim()
-
-    const [{ extract }, { match }] = await Promise.all([
-      import('../../backend/extract.js'),
-      import('../../backend/match.js'),
-    ])
-    const runId = await extract(emailId)
-    await match(runId)
-    const res = await pool.query<{ count: string }>(
-      `SELECT COUNT(*) AS count
-       FROM proposed_changes
-       WHERE extraction_run_id = $1 AND status = 'pending'`,
-      [runId],
-    )
-    return { pendingCount: Number(res.rows[0]?.count ?? 0) }
-  })
+import { api } from '#/lib/api'
 
 // ── route ─────────────────────────────────────────────────────────────────────
 
@@ -391,9 +362,10 @@ function ComposePage() {
       }
 
       setStatus('processing')
-      const { pendingCount } = await processEmail({ data: { mime: raw } })
+      const { email_id } = await api.ingestEmail(raw)
+      const { pending } = await api.runPipeline(email_id)
 
-      if (pendingCount > 0) {
+      if (pending > 0) {
         await navigate({ to: '/review' })
       } else {
         setStatus('done')

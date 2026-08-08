@@ -1,69 +1,53 @@
-#!/usr/bin/env python3
-"""Email ingestion service.
+"""Email ingestion: raw RFC 822 bytes → an `emails` row (+ attachments).
 
-Entry points:
-  HTTP:  uvicorn ingest:app  →  POST /emails  (raw RFC 822 body)
-  CLI:   python ingest.py <path/to/file.eml>
+Idempotent on the SHA-256 of the raw bytes, so the same physical email can
+never be ingested twice. Attachments are written to ATTACHMENTS_DIR under
+their content hash and recorded in `email_attachments`.
 """
 
-import argparse
-import asyncio
-import email as _email
+from __future__ import annotations
+
+import email as email_lib
 import email.policy
 import email.utils
 import hashlib
-import os
 import re
 import sys
+from datetime import datetime
+from email.message import Message
 from pathlib import Path
 
-import httpx
-from dotenv import load_dotenv
-import psycopg
-import uvicorn
-from fastapi import BackgroundTasks, FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
+from backend.config import get_settings
+from backend.db import connection
 
-# Load .env from the project root (one level up from backend/)
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-DATABASE_URL = os.environ["DATABASE_URL"]
-ATTACHMENTS_DIR = Path(os.environ.get("ATTACHMENTS_DIR", "./attachments"))
-EXTRACT_SERVER_URL = os.environ.get("EXTRACT_SERVER_URL", "http://localhost:8001")
-
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["POST"],
-    allow_headers=["*"],
-)
+_TAG = re.compile(r"<[^>]+>")
 
 
-def _plain_text(msg) -> str:
+def plain_text(msg: Message) -> str:
     """Prefer text/plain; fall back to tag-stripped text/html."""
-    plain = html = None
+    plain: str | None = None
+    html: str | None = None
     for part in msg.walk():
-        ct = part.get_content_type()
+        content_type = part.get_content_type()
         payload = part.get_payload(decode=True)
         if not payload:
             continue
         text = payload.decode(errors="replace")
-        if ct == "text/plain" and plain is None:
+        if content_type == "text/plain" and plain is None:
             plain = text
-        elif ct == "text/html" and html is None:
+        elif content_type == "text/html" and html is None:
             html = text
     if plain is not None:
         return plain
     if html is not None:
-        return re.sub(r"<[^>]+>", " ", html)
+        return _TAG.sub(" ", html)
     return ""
 
 
-def _save_attachments(msg) -> list[tuple[str, str, str]]:
-    """Save attachments to disk; return list of (stored_name, original_name, mime_type)."""
-    ATTACHMENTS_DIR.mkdir(exist_ok=True)
-    saved = []
+def save_attachments(msg: Message, attachments_dir: Path) -> list[tuple[str, str, str]]:
+    """Write attachments to disk; return (stored_name, original_name, mime_type)."""
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[tuple[str, str, str]] = []
     for part in msg.walk():
         if part.get_content_disposition() != "attachment":
             continue
@@ -74,100 +58,97 @@ def _save_attachments(msg) -> list[tuple[str, str, str]]:
         original_name = part.get_filename() or "attachment"
         suffix = Path(original_name).suffix or ".bin"
         stored_name = f"{content_hash}{suffix}"
-        dest = ATTACHMENTS_DIR / stored_name
-        if not dest.exists():
-            dest.write_bytes(payload)
+        destination = attachments_dir / stored_name
+        if not destination.exists():
+            destination.write_bytes(payload)
         mime_type = part.get_content_type() or "application/octet-stream"
         saved.append((stored_name, original_name, mime_type))
     return saved
 
 
-def ingest(raw: bytes) -> tuple[str, bool]:
-    """Parse RFC 822 bytes, persist to DB (idempotent on content_hash).
+def _received_at(msg: Message) -> datetime | None:
+    date_str = msg.get("Date")
+    if not date_str:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(date_str)
+    except (TypeError, ValueError):
+        return None
 
-    Returns (email_id, is_new). is_new is False for duplicate emails.
-    """
+
+async def ingest(raw: bytes) -> tuple[str, bool]:
+    """Parse and persist one email. Returns (email_id, is_new)."""
+    settings = get_settings()
     content_hash = hashlib.sha256(raw).hexdigest()
-    msg = _email.message_from_bytes(raw, policy=_email.policy.compat32)
+    msg = email_lib.message_from_bytes(raw, policy=email_lib.policy.compat32)
 
     message_id = str(msg.get("Message-ID") or f"<{content_hash}@local>").strip()
     sender = str(msg.get("From", ""))
     subject = str(msg.get("Subject", ""))
+    body_text = plain_text(msg)
+    attachments = save_attachments(msg, settings.attachments_dir)
 
-    date_str = msg.get("Date")
-    try:
-        received_at = _email.utils.parsedate_to_datetime(date_str) if date_str else None
-    except Exception:
-        received_at = None
-
-    body_text = _plain_text(msg)
-    attachments = _save_attachments(msg)
-
-    with psycopg.connect(DATABASE_URL) as conn:
-        existing = conn.execute(
+    async with connection() as conn:
+        cur = await conn.execute(
             "SELECT id FROM emails WHERE content_hash = %s", (content_hash,)
-        ).fetchone()
+        )
+        existing = await cur.fetchone()
         if existing:
-            return str(existing[0]), False
+            return str(existing["id"]), False
 
-        row = conn.execute(
-            """
-            INSERT INTO emails
-              (message_id, sender, subject, received_at, body_text, content_hash, status)
-            VALUES (%s, %s, %s, %s, %s, %s, 'ingested')
-            RETURNING id
-            """,
-            (message_id, sender, subject, received_at, body_text, content_hash),
-        ).fetchone()
-        email_id = str(row[0])
-
-        for stored_name, original_name, mime_type in attachments:
-            conn.execute(
+        async with conn.transaction():
+            cur = await conn.execute(
                 """
-                INSERT INTO email_attachments (email_id, stored_name, original_name, mime_type)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO emails
+                  (message_id, sender, subject, received_at, body_text, content_hash, status)
+                VALUES (%s, %s, %s, COALESCE(%s, now()), %s, %s, 'ingested')
+                RETURNING id
                 """,
-                (email_id, stored_name, original_name, mime_type),
+                (
+                    message_id,
+                    sender,
+                    subject,
+                    _received_at(msg),
+                    body_text,
+                    content_hash,
+                ),
             )
+            row = await cur.fetchone()
+            assert row is not None
+            email_id = str(row["id"])
 
-        conn.commit()
-        return email_id, True
+            for stored_name, original_name, mime_type in attachments:
+                await conn.execute(
+                    """
+                    INSERT INTO email_attachments
+                      (email_id, stored_name, original_name, mime_type)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (email_id, stored_name, original_name, mime_type),
+                )
+
+    return email_id, True
 
 
-async def _trigger_pipeline(email_id: str) -> None:
-    """Fire extract→match pipeline for a newly ingested email. Best-effort."""
+async def _cli() -> None:
+    """python -m backend.ingest <path/to/file.eml>"""
+    from backend.db import close_pool, open_pool
+
+    if len(sys.argv) < 2:
+        print("usage: python -m backend.ingest <path/to/file.eml>", file=sys.stderr)
+        raise SystemExit(1)
+
+    await open_pool()
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
-            await client.post(f"{EXTRACT_SERVER_URL}/pipeline", content=email_id)
-    except Exception as exc:
-        print(f"[ingest] pipeline trigger failed for {email_id}: {exc}", flush=True)
-
-
-@app.post("/emails")
-async def http_ingest(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    no_pipeline: bool = False,
-) -> Response:
-    email_id, is_new = ingest(await request.body())
-    if is_new and not no_pipeline:
-        background_tasks.add_task(_trigger_pipeline, email_id)
-    return Response(content=email_id, media_type="text/plain", status_code=200)
-
-
-def cli_main() -> None:
-    ap = argparse.ArgumentParser(description="Ingest an .eml file into the database.")
-    ap.add_argument("path", help="Path to .eml file")
-    args = ap.parse_args()
-    email_id, is_new = ingest(Path(args.path).read_bytes())
-    print(email_id)
-    if not is_new:
-        print("(duplicate — already ingested)", file=sys.stderr)
+        email_id, is_new = await ingest(Path(sys.argv[1]).read_bytes())
+        print(email_id)
+        if not is_new:
+            print("(duplicate — already ingested)", file=sys.stderr)
+    finally:
+        await close_pool()
 
 
 if __name__ == "__main__":
-    # If first arg looks like a file path, run CLI mode; otherwise serve HTTP.
-    if sys.argv[1:] and not sys.argv[1].startswith("--"):
-        cli_main()
-    else:
-        uvicorn.run("ingest:app", host="0.0.0.0", port=8000)
+    import asyncio
+
+    asyncio.run(_cli())

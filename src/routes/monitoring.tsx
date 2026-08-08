@@ -1,77 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { createServerFn } from '@tanstack/react-start'
-import { pool } from '#/db.js'
-
-// ── server functions ──────────────────────────────────────────────────────────
-
-const getMonitoringData = createServerFn({ method: 'GET' }).handler(async () => {
-  const [statusRes, stuckRes, rejectionsRes, changesRes] = await Promise.all([
-    // 1. Email counts by status (via pipeline_status view)
-    pool.query<{ status: string; count: number }>(`
-      SELECT status, count FROM pipeline_status ORDER BY count DESC
-    `),
-
-    // 2. Stuck emails (ingested/failed, older than 1 hour)
-    pool.query<{
-      id: string
-      sender: string
-      subject: string | null
-      status: string
-      received_at: string
-      attempt_count: number
-    }>(`
-      SELECT
-        e.id,
-        e.sender,
-        e.subject,
-        e.status,
-        e.received_at,
-        count(er.id)::integer AS attempt_count
-      FROM emails e
-      LEFT JOIN extraction_runs er ON er.email_id = e.id
-      WHERE e.status IN ('ingested', 'failed')
-        AND e.received_at < now() - interval '1 hour'
-      GROUP BY e.id, e.sender, e.subject, e.status, e.received_at
-      ORDER BY e.received_at ASC
-      LIMIT 50
-    `),
-
-    // 3. Rejection patterns per supplier (via rejection_patterns view)
-    pool.query<{
-      supplier_name: string
-      has_notes: boolean
-      rejection_reason: string
-      count: number
-    }>(`SELECT supplier_name, has_notes, rejection_reason, count FROM rejection_patterns ORDER BY supplier_name, count DESC`),
-
-    // 4. Proposed changes summary
-    pool.query<{
-      pending: number
-      total_applied: number
-      total_rejected: number
-      avg_confidence: string | null
-    }>(`
-      SELECT
-        count(*) FILTER (WHERE status = 'pending')::integer                     AS pending,
-        count(*) FILTER (WHERE status = 'applied')::integer                     AS total_applied,
-        count(*) FILTER (WHERE status = 'rejected')::integer                    AS total_rejected,
-        round(avg(combined_confidence) FILTER (WHERE status = 'applied'), 3)::text AS avg_confidence
-      FROM proposed_changes
-    `),
-  ])
-
-  return {
-    statusCounts:  statusRes.rows,
-    stuckEmails:   stuckRes.rows,
-    rejections:    rejectionsRes.rows,
-    changesSummary: changesRes.rows[0] ?? { pending: 0, total_applied: 0, total_rejected: 0, avg_confidence: null },
-  }
-})
+import { api, type MonitoringData } from '#/lib/api'
 
 // ── route ─────────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute('/monitoring')({
-  loader: () => getMonitoringData(),
+  loader: () => api.getMonitoring(),
   component: MonitoringPage,
 })
 
@@ -106,7 +39,7 @@ const REASON_LABEL: Record<string, string> = {
 
 // ── components ────────────────────────────────────────────────────────────────
 
-type Data = Awaited<ReturnType<typeof getMonitoringData>>
+type Data = MonitoringData
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -125,7 +58,13 @@ function Card({ children }: { children: React.ReactNode }) {
   )
 }
 
-function PipelineHealth({ statusCounts, changesSummary }: Pick<Data, 'statusCounts' | 'changesSummary'>) {
+function PipelineHealth({
+  statusCounts,
+  changesSummary,
+}: {
+  statusCounts: Data['status_counts']
+  changesSummary: Data['changes_summary']
+}) {
   const byStatus = Object.fromEntries(statusCounts.map((r) => [r.status, r.count]))
   const sorted   = STATUS_ORDER.filter((s) => byStatus[s] != null)
     .concat(statusCounts.map((r) => r.status).filter((s) => !STATUS_ORDER.includes(s)))
@@ -175,7 +114,7 @@ function PipelineHealth({ statusCounts, changesSummary }: Pick<Data, 'statusCoun
   )
 }
 
-function StuckEmails({ emails }: { emails: Data['stuckEmails'] }) {
+function StuckEmails({ emails }: { emails: Data['stuck_emails'] }) {
   if (emails.length === 0) {
     return <Card><p className="text-sm text-[var(--muted)]">No stuck emails — pipeline is healthy.</p></Card>
   }
@@ -285,11 +224,14 @@ function MonitoringPage() {
       <h1 className="mb-6 text-xl font-bold">Monitoring</h1>
 
       <Section title="Pipeline Health">
-        <PipelineHealth statusCounts={data.statusCounts} changesSummary={data.changesSummary} />
+        <PipelineHealth
+          statusCounts={data.status_counts}
+          changesSummary={data.changes_summary}
+        />
       </Section>
 
-      <Section title={`Stuck Emails${data.stuckEmails.length > 0 ? ` (${data.stuckEmails.length})` : ''}`}>
-        <StuckEmails emails={data.stuckEmails} />
+      <Section title={`Stuck Emails${data.stuck_emails.length > 0 ? ` (${data.stuck_emails.length})` : ''}`}>
+        <StuckEmails emails={data.stuck_emails} />
       </Section>
 
       <Section title="Rejection Patterns by Supplier">

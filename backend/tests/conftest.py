@@ -17,13 +17,19 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-import psycopg
-import pytest
-import pytest_asyncio
-from psycopg.rows import dict_row
+# Pin the offline provider before any settings are read. Without this the
+# suite inherits whatever .env says, and a developer with OPENROUTER_API_KEY
+# set would have the tests make real, billable network calls. Environment
+# variables take precedence over .env in pydantic-settings.
+os.environ["LLM_PROVIDER"] = "stub"
 
-from backend.config import PROJECT_ROOT
-from backend.db import close_pool, connection, open_pool
+import psycopg  # noqa: E402
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+from psycopg.rows import dict_row  # noqa: E402
+
+from backend.config import PROJECT_ROOT  # noqa: E402
+from backend.db import close_pool, connection, open_pool  # noqa: E402
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql://localhost/email_parser_test"
